@@ -69,7 +69,18 @@ impl Options {
         let mut values = BTreeMap::new();
         let mut switches = vec![];
         while let Some(k) = it.next() {
-            if ["--expect", "--no-anc", "--no-vbi", "--nonpcm", "--no-meta"].contains(&k.as_str()) {
+            if [
+                "--expect",
+                "--no-anc",
+                "--no-vbi",
+                "--nonpcm",
+                "--no-meta",
+                "--wire-plan",
+                "--stop-on-stdin",
+                "--exhaustive",
+            ]
+            .contains(&k.as_str())
+            {
                 switches.push(k);
             } else if [
                 "--device",
