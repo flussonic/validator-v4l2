@@ -1,0 +1,12 @@
+[package]
+name = "validator-v4l2"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Video, audio, ANC, HDR and stability validator for the common SDI V4L2 ABI"
+build = "build.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1

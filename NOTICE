@@ -1,0 +1,13 @@
+The application, native ABI adapter and adapted Flussonic Sapsan drawing
+code are distributed under the MIT License, at the copyright owner's
+explicit request.
+
+include/sdi_av.h is the unmodified Linux userspace ABI header shared by the
+Flussonic SDI drivers. It retains its original SPDX license:
+GPL-2.0 WITH Linux-syscall-note. This exception allows a userspace application
+to include the header without adopting the GPL. See
+https://www.kernel.org/doc/html/latest/process/license-rules.html
+and https://spdx.org/licenses/Linux-syscall-note.html .
+
+No driver implementation, vendor SDK or GPL bench-tool source is included.
+Sapsan drawing provenance and adaptations are documented in docs/generator.md.
