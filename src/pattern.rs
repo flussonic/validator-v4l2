@@ -452,7 +452,11 @@ pub fn fixtures(frame: u64, mode: Mode) -> Vec<Packet> {
             data: atc,
         },
         Packet {
-            line: 11,
+            line: if mode.total_lines == 625 || mode.total_lines == 525 {
+                7
+            } else {
+                11
+            },
             did: 0x41,
             sdid: 5,
             flags: 0,
@@ -471,7 +475,11 @@ pub fn fixtures(frame: u64, mode: Mode) -> Vec<Packet> {
             line: 12,
             did: 0x41,
             sdid: 7,
-            flags: 2,
+            flags: if mode.total_lines == 625 || mode.total_lines == 525 {
+                0
+            } else {
+                2
+            },
             data: scte,
         },
         Packet {
@@ -479,7 +487,7 @@ pub fn fixtures(frame: u64, mode: Mode) -> Vec<Packet> {
             did: 0x43,
             sdid: 2,
             flags: 0,
-            data: vec![0x51, 0x15, 0x11, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            data: crate::teletext::op47(frame),
         },
         Packet {
             line: 14,
@@ -526,14 +534,32 @@ pub fn vbi(b: &mut [u8], lines: u32, frame: u64) -> Result<usize> {
     };
     let size = rows * 1440;
     let dst = b.get_mut(..size).ok_or("VBI buffer too small")?;
-    for (i, s) in dst.chunks_exact_mut(2).enumerate() {
-        let v = if (i / 12 + frame as usize) % 2 == 0 {
-            64u16
-        } else {
-            800
-        };
-        s.copy_from_slice(&v.to_le_bytes());
+    dst.fill(0);
+    if lines == 625 {
+        for (line, header) in [(10, true), (11, false), (323, true), (324, false)] {
+            let r = crate::teletext::row(lines, line).unwrap();
+            crate::teletext::render(
+                &mut dst[r * 1440..(r + 1) * 1440],
+                &crate::teletext::packet(frame, header),
+            )?;
+        }
+    } else {
+        for line in [21, 284] {
+            let row = crate::teletext::row(lines, line).unwrap();
+            for (i, s) in dst[row * 1440..(row + 1) * 1440]
+                .chunks_exact_mut(2)
+                .enumerate()
+            {
+                let v = if (i / 12 + frame as usize) % 2 == 0 {
+                    64u16
+                } else {
+                    800
+                };
+                s.copy_from_slice(&v.to_le_bytes());
+            }
+        }
     }
+
     Ok(size)
 }
 pub struct Generator {

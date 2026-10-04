@@ -3,6 +3,7 @@ mod device;
 mod pattern;
 mod report;
 mod sapsan;
+mod teletext;
 mod validate;
 use device::*;
 use pattern::*;
@@ -41,6 +42,7 @@ Options:
   --slow-ms N          deliberately delay output refill (fault injection)
   --timeout-ms N       per-frame timeout (default 3000)
   --duration SECONDS   bounded transmit/soak duration
+  --exhaustive         all timing/format combinations in quick/plan
   --cycles N          bound soak by matrix cycles as well as duration
   --seed N            reproducible randomized soak order (default 1)
   --tx-host HOST --rx-host HOST  SSH endpoints (omitted = local Linux)
@@ -229,29 +231,34 @@ fn attrs(p: &str) -> BTreeMap<String, String> {
         })
         .collect()
 }
-fn inventory(o: &Options) -> Result<()> {
+fn inventory(o: &Options) -> Result<bool> {
+    let mut ok = true;
     for p in nodes(o)? {
-        match probe(&p) {
-            Ok(i) => {
-                contract(&p, i.output != 0)?;
-                let modes = modes(&p)?;
-                let f = formats(&p, i.output != 0)?;
-                let detail = format!(
-                    "driver={} card={} bus={} direction={} formats={} timings={} sysfs={:?}",
-                    text(&i.driver),
-                    text(&i.card),
-                    text(&i.bus),
-                    if i.output != 0 { "output" } else { "capture" },
-                    f.iter().map(|f| code(*f)).collect::<Vec<_>>().join(","),
-                    modes.iter().map(|m| m.name()).collect::<Vec<_>>().join(","),
-                    attrs(&p)
-                );
-                emit(o.report(), "INFO", &p, &detail, None)?;
+        let result = (|| -> Result<String> {
+            let i = probe(&p)?;
+            contract(&p, i.output != 0)?;
+            let ms = modes(&p)?;
+            let fs = formats(&p, i.output != 0)?;
+            Ok(format!(
+                "driver={} card={} bus={} direction={} formats={} timings={} sysfs={:?}",
+                text(&i.driver),
+                text(&i.card),
+                text(&i.bus),
+                if i.output != 0 { "output" } else { "capture" },
+                fs.iter().map(|f| code(*f)).collect::<Vec<_>>().join(","),
+                ms.iter().map(|m| m.name()).collect::<Vec<_>>().join(","),
+                attrs(&p)
+            ))
+        })();
+        match result {
+            Ok(detail) => emit(o.report(), "INFO", &p, &detail, None)?,
+            Err(e) => {
+                emit(o.report(), "FAIL", &p, &e, None)?;
+                ok = false;
             }
-            Err(e) => emit(o.report(), "FAIL", &p, &e, None)?,
         }
     }
-    Ok(())
+    Ok(ok)
 }
 fn selected(p: &str, name: &str) -> Result<Mode> {
     let ms = modes(p)?;
@@ -398,6 +405,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     let expect = if o.has("--expect") { Some(&c) } else { None };
     while stats.frames < frames
         && (duration == 0 || started.elapsed() < Duration::from_secs(duration))
+        && !stop_requested()
     {
         let mut f = d.next(timeout)?;
         stats.source_events += f.events as u64;
@@ -514,8 +522,16 @@ fn matrix(o: &Options, p: &str) -> Result<Vec<Case>> {
         formats(p, true)?
     };
     let mut cases = vec![];
-    for m in ms {
-        for f in &fs {
+    for (mi, m) in ms.into_iter().enumerate() {
+        for (fi, f) in fs.iter().enumerate() {
+            if !o.has("--exhaustive")
+                && o.cmd != "soak"
+                && fi != 0
+                && mi != 0
+                && !(m.height == 2160 && (m.fps() - 50.).abs() < 0.01)
+            {
+                continue;
+            }
             let f = code(*f);
             if !FORMATS.contains(&f.as_str()) {
                 continue;
@@ -653,8 +669,13 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(25.);
     let duration = (o.number("--frames", 50)? as f64 / rate.max(1.) * 2.).ceil() as u64 + 5;
-    ta.extend(["--duration".into(), duration.to_string()]);
+    ta.extend([
+        "--duration".into(),
+        duration.to_string(),
+        "--stop-on-stdin".into(),
+    ]);
     let mut child = command(o, "--tx-host", &ta)?
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -673,8 +694,9 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
     ra.extend(case_args(case));
     // Capture enumeration indices are vendor-specific: the mode name is resolved independently.
     let result = command(o, "--rx-host", &ra)?.output();
-    if result.is_err() {
-        let _ = child.kill();
+    if let Some(mut input) = child.stdin.take() {
+        use std::io::Write;
+        let _ = input.write_all(b"stop\n");
     }
     let tx_result = child.wait_with_output().map_err(|e| e.to_string())?;
     let rx_result = result.map_err(|e| e.to_string())?;
@@ -699,8 +721,7 @@ fn quick(o: &Options) -> Result<bool> {
     if o.values.contains_key("--pair") {
         return run_matrix(o, false);
     }
-    inventory(o)?;
-    let mut ok = true;
+    let mut ok = inventory(o)?;
     for p in nodes(o)? {
         let i = probe(&p)?;
         if i.output != 0 {
@@ -715,6 +736,14 @@ fn quick(o: &Options) -> Result<bool> {
         }
         let mut capture = o.clone();
         capture.values.insert("--device".into(), p.clone());
+        if !capture.values.contains_key("--format") {
+            let fs = formats(&p, false)?;
+            let preferred = fourcc("SDUY")?;
+            if let Some(f) = fs.iter().find(|f| **f == preferred).or_else(|| fs.first()) {
+                capture.values.insert("--format".into(), code(*f));
+            }
+        }
+
         match stream(&capture, false) {
             Ok(pass) => ok &= pass,
             Err(e)
@@ -799,13 +828,21 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
     Ok(cases)
 }
 fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
-    let (tx, _) = pair(o)?;
+    let tx = if o.values.contains_key("--pair") {
+        pair(o)?.0
+    } else {
+        o.required("--device")?
+    };
     let mut cases = if o.values.contains_key("--tx-host") {
         let mut args = vec![
             "plan".into(),
             "--wire-plan".into(),
             "--pair".into(),
-            o.required("--pair")?.into(),
+            o.values
+                .get("--pair")
+                .cloned()
+                .unwrap_or_else(|| format!("{tx}={tx}")),
+            "--exhaustive".into(),
         ];
         for key in [
             "--mode",
@@ -820,7 +857,13 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
                 args.extend([key.into(), v.clone()]);
             }
         }
-        for key in ["--no-anc", "--no-vbi", "--nonpcm", "--no-meta"] {
+        for key in [
+            "--no-anc",
+            "--no-vbi",
+            "--nonpcm",
+            "--no-meta",
+            "--exhaustive",
+        ] {
             if o.has(key) {
                 args.push(key.into());
             }
@@ -854,10 +897,41 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
             }
         }
         for case in &cases {
+            if stop_requested() {
+                return Ok(ok);
+            }
             if duration != 0 && start.elapsed().as_secs() >= duration {
                 return Ok(ok);
             }
-            match one_pair(o, case) {
+            let result = if o.values.contains_key("--pair") {
+                one_pair(o, case)
+            } else {
+                let mut args = vec![
+                    "transmit".into(),
+                    "--device".into(),
+                    tx.into(),
+                    "--frames".into(),
+                    o.number("--frames", 50)?.to_string(),
+                ];
+                args.extend(case_args(case));
+                let r = command(o, "--tx-host", &args)?
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                let pass = r.status.success();
+                emit(
+                    o.report(),
+                    if pass { "OBSERVED" } else { "FAIL" },
+                    &format!("output-only {case:?}"),
+                    &format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&r.stdout),
+                        String::from_utf8_lossy(&r.stderr)
+                    ),
+                    None,
+                )?;
+                Ok(pass)
+            };
+            match result {
                 Ok(pass) => ok &= pass,
                 Err(e) => {
                     emit(
@@ -975,10 +1049,7 @@ fn run(o: &Options) -> Result<bool> {
             print!("{HELP}");
             Ok(true)
         }
-        "list" => {
-            inventory(o)?;
-            Ok(true)
-        }
+        "list" => inventory(o),
         "quick" => quick(o),
         "receive" => stream(o, false),
         "transmit" => stream(o, true),
@@ -1013,8 +1084,23 @@ fn run(o: &Options) -> Result<bool> {
         _ => Err(format!("unknown command {}", o.cmd)),
     }
 }
+static STDIN_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn stop_requested() -> bool {
+    stopped() || STDIN_STOP.load(std::sync::atomic::Ordering::Relaxed)
+}
 fn main() {
-    let result = Options::parse().and_then(|o| run(&o));
+    signals();
+    let result = Options::parse().and_then(|o| {
+        if o.has("--stop-on-stdin") {
+            std::thread::spawn(|| {
+                use std::io::Read;
+                let mut b = [0u8; 1];
+                let _ = std::io::stdin().read(&mut b);
+                STDIN_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+        run(&o)
+    });
     match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),

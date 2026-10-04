@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /* ABI adapter only. Test patterns, analysis and orchestration live in Rust. */
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
@@ -30,7 +31,7 @@ static void mode_of(const struct v4l2_dv_timings *t,struct mode *m) {
  const struct v4l2_bt_timings *b=&t->bt; m->width=b->width; m->height=b->height; m->interlaced=b->interlaced;
  m->total_lines=V4L2_DV_BT_FRAME_HEIGHT(b); m->num=b->pixelclock; m->den=(uint64_t)V4L2_DV_BT_FRAME_WIDTH(b)*m->total_lines;
  if(b->flags & V4L2_DV_FL_REDUCED_FPS) {m->num*=1000; m->den*=1001;}
- m->reduced=!!(b->flags & V4L2_DV_FL_CAN_REDUCE_FPS);
+ m->reduced=(b->flags & V4L2_DV_FL_REDUCED_FPS)?2:!!(b->flags & V4L2_DV_FL_CAN_REDUCE_FPS);
 }
 int vv_mode(const char *path,unsigned index,struct mode *m) {
  int fd=open(path,O_RDWR|O_NONBLOCK|O_CLOEXEC); if(fd<0)return -errno;
@@ -121,3 +122,8 @@ int vv_contract(const char *path,unsigned output) {
  if(r>=0){if(f.fmt.pix_mp.num_planes!=SDI_NUM_PLANES || f.fmt.pix_mp.plane_fmt[3].sizeimage<128)r=-EPROTO;for(unsigned p=0;p<5;p++)if(!f.fmt.pix_mp.plane_fmt[p].sizeimage)r=-EPROTO;}
  close(fd);return r;
 }
+
+static volatile sig_atomic_t stopped;
+static void stop_handler(int sig) { (void)sig;stopped=1; }
+void vv_signals(void) {struct sigaction sa={0};sa.sa_handler=stop_handler;sigemptyset(&sa.sa_mask);sigaction(SIGINT,&sa,NULL);sigaction(SIGTERM,&sa,NULL);}
+int vv_stopped(void) {return stopped;}

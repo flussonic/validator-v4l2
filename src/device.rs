@@ -90,6 +90,8 @@ impl Frame {
 }
 #[cfg(target_os = "linux")]
 extern "C" {
+    fn vv_signals();
+    fn vv_stopped() -> i32;
     fn vv_contract(path: *const c_char, output: u32) -> i32;
     fn vv_probe(path: *const c_char, i: *mut Info) -> i32;
     fn vv_mode(path: *const c_char, index: u32, m: *mut Mode) -> i32;
@@ -115,6 +117,10 @@ extern "C" {
 #[cfg(not(target_os = "linux"))]
 mod stub {
     use super::*;
+    pub unsafe fn vv_signals() {}
+    pub unsafe fn vv_stopped() -> i32 {
+        0
+    }
     pub unsafe fn vv_contract(_: *const c_char, _: u32) -> i32 {
         -38
     }
@@ -193,7 +199,7 @@ pub fn modes(p: &str) -> Result<Vec<Mode>> {
             return Err("invalid timing rational".into());
         }
         out.push(m);
-        if m.reduced != 0 {
+        if m.reduced == 1 {
             m.num *= 1000;
             m.den *= 1001;
             m.reduced = 2;
@@ -287,4 +293,11 @@ pub fn contract(p: &str, output: bool) -> Result<()> {
         "five-plane ABI",
     )?;
     Ok(())
+}
+
+pub fn signals() {
+    unsafe { vv_signals() }
+}
+pub fn stopped() -> bool {
+    unsafe { vv_stopped() != 0 }
 }

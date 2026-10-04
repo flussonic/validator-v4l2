@@ -24,11 +24,15 @@ source is OBSERVED, not an end-to-end PASS. Output nodes need an explicit pair.
 ```sh
 # A physical SDI loop on one server; use the actual connected, free nodes.
 ./validator-v4l2 loop --pair /dev/video4=/dev/video0 --mode 1080p25 --frames 250
-# Full enumerated output matrix, up to UHD/DCI 4K, plus feature variations.
+# Quick coverage of advertised modes/formats up to UHD/DCI 4K, plus features.
 ./validator-v4l2 plan --pair /dev/video4=/dev/video0
 ./validator-v4l2 quick --pair /dev/video4=/dev/video0 --report matrix.jsonl
+# Every timing/format combination.
+./validator-v4l2 quick --pair /dev/video4=/dev/video0 --exhaustive --report full.jsonl
 # Repeat the matrix in a reproducible random order for a day.
 ./validator-v4l2 soak --pair /dev/video4=/dev/video0 --duration 86400 --seed 1 --report soak.jsonl
+# Output-only endurance on one server without a connected receiver.
+./validator-v4l2 soak --device /dev/video4 --duration 3600 --report output.jsonl
 # Test the software generator/validator without a board.
 ./validator-v4l2 software --frames 12 --report software.jsonl
 ```
@@ -36,7 +40,9 @@ source is OBSERVED, not an end-to-end PASS. Output nodes need an explicit pair.
 A paired case checks the generated picture and frame counter, audio tones and
 continuity, ANC payloads, HDR/Level B metadata, SD VBI waveforms, frame errors,
 sequence gaps, timestamps and exposed driver counters. Modes, formats and
-settings are discovered from the driver. Missing counters remain unknown.
+settings are discovered from the driver. SIGINT/SIGTERM stops streaming
+and restores changed sysfs defaults; paired transmitters also stop when
+the receiver finishes. Missing counters remain unknown.
 The generator includes the Sapsan seven bars, bouncing square, changing
 text and PTS band; see [generator provenance](docs/generator.md).
 

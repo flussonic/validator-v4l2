@@ -260,3 +260,17 @@ fn remote_plan_is_lossless_and_rejects_bad_payload() {
     assert!(parse_plan("bad").is_err());
     assert!(parse_plan(&wire.replace("\t8\t25", "\t99\t25")).is_err());
 }
+
+#[test]
+fn teletext_header_and_row_roundtrip() {
+    for header in [true, false] {
+        let p = teletext::packet(123, header);
+        let mut line = vec![0; 1440];
+        teletext::render(&mut line, &p).unwrap();
+        assert_eq!(teletext::slice(&line).unwrap(), p);
+        assert!(teletext::slice(&vec![0; 1440]).is_err());
+        let op = teletext::op47(123);
+        assert_eq!(op[2] as usize, op.len());
+        assert_eq!(op.iter().fold(0u8, |s, b| s.wrapping_add(*b)), 0);
+    }
+}

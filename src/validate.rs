@@ -191,10 +191,20 @@ impl Stats {
                 }
             }
             if c.vbi && rows != 0 {
-                let mut v = vec![0; rows * 1440];
-                vbi(&mut v, m.total_lines, frame)?;
-                if p[4] != v {
-                    self.fail("VBI waveform mismatch");
+                if m.total_lines == 625 {
+                    if let Err(e) = crate::teletext::check_vbi(p[4], m.total_lines, frame) {
+                        self.fail(e);
+                    }
+                } else {
+                    let mut v = vec![0; rows * 1440];
+                    vbi(&mut v, m.total_lines, frame)?;
+                    for line in [21, 284] {
+                        let row = crate::teletext::row(m.total_lines, line).unwrap();
+                        let range = row * 1440..(row + 1) * 1440;
+                        if p[4].get(range.clone()) != Some(&v[range]) {
+                            self.fail("VBI waveform mismatch");
+                        }
+                    }
                 }
             }
         }
