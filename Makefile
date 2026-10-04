@@ -6,6 +6,11 @@ all:
 	cp target/release/validator-v4l2 validator-v4l2
 test:
 	$(CARGO) test --offline
+	@if [ "$$(uname -s)" = Linux ]; then \
+	    mkdir -p target; \
+	    $(CC) -std=gnu11 -Wall -Wextra -Iinclude tests/native_events.c -o target/native-events && \
+	    target/native-events; \
+	fi
 check:
 	$(CARGO) fmt -- --check
 	$(CARGO) clippy --offline --all-targets -- -D warnings

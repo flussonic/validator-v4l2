@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <limits.h>
 #include <sys/ioctl.h>
 #include <linux/dma-heap.h>
 #include <linux/dma-buf.h>
@@ -107,10 +109,27 @@ int vv_queue(struct device *d,const struct frame *f) {
 int vv_start(struct device *d) {int r=call(d->fd,VIDIOC_STREAMON,&d->type);if(r>=0)d->on=1;return r;}
 int vv_next(struct device *d,unsigned timeout,struct frame *f) {
  struct pollfd pfd={.fd=d->fd,.events=(d->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE?POLLOUT:POLLIN)|POLLPRI};
- int r; do {r=poll(&pfd,1,timeout);}while(r<0 && errno==EINTR);if(r<0)return -errno;if(!r)return -ETIMEDOUT;
- unsigned events=0; if(pfd.revents&POLLPRI){struct v4l2_event e;while(call(d->fd,VIDIOC_DQEVENT,&e)>=0)events++;}
  struct v4l2_plane p[5]={0};struct v4l2_buffer b={.type=d->type,.memory=d->memory,.length=5,.m.planes=p};
- r=call(d->fd,VIDIOC_DQBUF,&b);if(r<0)return r;if(b.index>=d->count || b.length!=5)return -EPROTO;
+ struct timespec now;if(clock_gettime(CLOCK_MONOTONIC,&now)<0)return -errno;
+ uint64_t deadline=(uint64_t)now.tv_sec*1000+now.tv_nsec/1000000+timeout;
+ unsigned events=0;int r;
+ for(;;){
+  if(clock_gettime(CLOCK_MONOTONIC,&now)<0)return -errno;
+  uint64_t ms=(uint64_t)now.tv_sec*1000+now.tv_nsec/1000000;
+  if(ms>=deadline)return -ETIMEDOUT;
+  uint64_t remaining=deadline-ms;
+  r=poll(&pfd,1,remaining>INT_MAX?INT_MAX:(int)remaining);
+  if(r<0){if(errno==EINTR)continue;return -errno;}if(!r)return -ETIMEDOUT;
+  if(pfd.revents&POLLPRI){struct v4l2_event e;while(call(d->fd,VIDIOC_DQEVENT,&e)>=0)events++;}
+  if(pfd.revents&POLLNVAL)return -EBADF;
+  if(pfd.revents&POLLHUP)return -ENODEV;
+  if(!(pfd.revents&(POLLIN|POLLOUT|POLLERR)))continue;
+  r=call(d->fd,VIDIOC_DQBUF,&b);
+  if(r==-EAGAIN)continue;
+  if(r<0)return r;
+  break;
+ }
+ if(b.index>=d->count || b.length!=5)return -EPROTO;
  r=vv_buffer(d,b.index,f);if(r<0)return r;f->sequence=b.sequence;f->flags=b.flags;f->events=events;f->timestamp=(uint64_t)b.timestamp.tv_sec*1000000000+(uint64_t)b.timestamp.tv_usec*1000;
  for(unsigned j=0;j<5;j++) {if(p[j].bytesused>d->len[b.index][j] || p[j].data_offset>p[j].bytesused)return -EPROTO;f->data[j]=(uint8_t *)d->map[b.index][j]+p[j].data_offset;f->len[j]=p[j].bytesused-p[j].data_offset;}
  return 0;
