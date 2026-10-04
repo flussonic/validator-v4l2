@@ -278,7 +278,8 @@ pub fn check_video(b: &[u8], l: Layout, frame: u64, m: Mode) -> Result<()> {
                 l.width as usize,
                 l.height as usize,
                 frame,
-                m.fps(),
+                m.num,
+                m.den,
             );
             if a.abs_diff(expected) > 16 {
                 return Err(format!(
@@ -316,6 +317,14 @@ pub fn tone(phase: u64, ch: usize) -> i32 {
     });
     tones[ch][(phase % 192) as usize]
 }
+pub fn encoded_word(phase: u64, ch: usize) -> u32 {
+    const BURST: [u16; 8] = [0xf872, 0x4e1f, 1, 64, 0x0b77, 0, 0x0c40, 0x4040];
+    (BURST
+        .get((phase % 1536) as usize * 2 + ch)
+        .copied()
+        .unwrap_or(0) as u32)
+        << 16
+}
 pub fn audio(b: &mut [u8], samples: usize, phase: u64, c: &Config) -> Result<()> {
     if (samples + c.pad as usize) * 64 > b.len() {
         return Err("audio buffer too small".into());
@@ -327,14 +336,7 @@ pub fn audio(b: &mut [u8], samples: usize, phase: u64, c: &Config) -> Result<()>
             } else if ch >= c.channels as usize {
                 0
             } else if c.nonpcm && ch < 2 {
-                let burst = [0xf872u16, 0x4e1f, 1, 64, 0x0b77, 0, 0x0c40, 0x4040];
-                let w = {
-                    burst
-                        .get(((phase + i as u64) % 1536) as usize * 2 + ch)
-                        .copied()
-                        .unwrap_or(0)
-                };
-                (w as u32) << 16
+                encoded_word(phase + i as u64, ch)
             } else {
                 (tone(phase + i as u64, ch) as u32) << 8
             };

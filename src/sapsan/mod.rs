@@ -193,17 +193,7 @@ pub struct Picture {
 }
 impl Picture {
     pub fn new(width: u32, height: u32, num: u64, den: u64) -> Self {
-        let mut a = num;
-        let mut b = den;
-        while b != 0 {
-            let r = a % b;
-            a = b;
-            b = r;
-        }
-        let rate = FrameRate {
-            numerator: (num / a.max(1)) as u32,
-            denominator: (den / a.max(1)) as u32,
-        };
+        let rate = frame_rate(num, den);
         let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
             .unwrap_or_else(|_| "localhost".into())
             .trim()
@@ -221,6 +211,12 @@ impl Picture {
             base,
             overlay,
         }
+    }
+    pub fn image(&self) -> &[u8] {
+        &self.image
+    }
+    pub fn frame_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        self.overlay.as_ref().and_then(TextOverlay::frame_rect)
     }
     pub fn render(&mut self, frame: u64) -> &[u8] {
         self.image.copy_from_slice(&self.base);
@@ -241,16 +237,16 @@ impl Picture {
         &self.image
     }
 }
-pub fn expected_luma(x: usize, y: usize, w: usize, h: usize, frame: u64, fps: f64) -> u16 {
-    let center = moving_square_center(
-        frame,
-        FrameRate {
-            numerator: (fps * 1000.).round() as u32,
-            denominator: 1000,
-        },
-        w,
-        h,
-    );
+pub fn expected_luma(
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    frame: u64,
+    num: u64,
+    den: u64,
+) -> u16 {
+    let center = moving_square_center(frame, frame_rate(num, den), w, h);
     let side = moving_square_side(h);
     let x0 = center.0.saturating_sub(side / 2);
     let y0 = center.1.saturating_sub(side / 2);
@@ -258,5 +254,19 @@ pub fn expected_luma(x: usize, y: usize, w: usize, h: usize, frame: u64, fps: f6
         SQUARE_COLOR.0 as u16 * 4
     } else {
         COLOR_BARS[(x * 7 / w).min(6)].0 as u16 * 4
+    }
+}
+
+fn frame_rate(num: u64, den: u64) -> FrameRate {
+    let mut a = num;
+    let mut b = den;
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    FrameRate {
+        numerator: (num / a.max(1)) as u32,
+        denominator: (den / a.max(1)) as u32,
     }
 }

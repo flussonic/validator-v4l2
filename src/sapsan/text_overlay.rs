@@ -354,6 +354,16 @@ impl TextOverlay {
         self.blend_chroma(frame);
     }
 
+    pub fn frame_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        let line = self.lines.get(LINE_FRAME)?;
+        let pad = INNER_PAD_CELLS * self.scale;
+        Some((
+            self.plate_x + pad,
+            self.plate_y + pad + LINE_FRAME * LINE_PITCH * self.scale,
+            line.chars().count().min(self.cols) * ADVANCE * self.scale - self.scale,
+            CELL_H * self.scale,
+        ))
+    }
     fn refresh_dynamic_lines(&mut self, pts_ms: u64, frame_index: u64) {
         if let Some(line) = self.lines.get_mut(LINE_TIME) {
             line.clear();

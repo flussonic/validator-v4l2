@@ -17,7 +17,7 @@ Implemented checks:
   requested memory type produce a failing case; heap absence is operational.
 - Audio present mask separately from measured nonzero channels; tone payload,
   channel order, cadence, continuity, padding and missing output metadata.
-- SMPTE 337M transport preamble fixture and non-PCM metadata. The fixture is
+- SMPTE 337M transport fixture, exact burst payload/continuity and non-PCM metadata. The fixture is
   a transport test, not an encoded AC-3/Dolby E decoder test.
 - ANC header/UDW bounds and parity, checksum flags, line bounds and exact
   frame-associated payloads for ATC, AFD, SCTE-104, OP-47, captions and a

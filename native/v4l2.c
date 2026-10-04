@@ -18,7 +18,7 @@ struct info { char driver[16], card[32], bus[32]; uint32_t caps, output; };
 struct mode { uint32_t width,height,interlaced,total_lines; uint64_t num,den; uint32_t index,reduced; };
 struct layout { uint32_t width,height,fourcc,stride,sizes[5]; };
 struct frame { uint32_t index,sequence,flags,events; uint64_t timestamp; uint8_t *data[5]; uint32_t len[5]; };
-struct device { int fd; unsigned type,memory,count,on; void *map[BUFS][5]; size_t len[BUFS][5]; struct layout layout; int dma_fd[BUFS][5]; };
+struct device { int fd; unsigned type,memory,count,on; void *map[BUFS][5]; size_t len[BUFS][5]; struct layout layout; int dma_fd[BUFS][5]; unsigned cpu[BUFS][5]; };
 static int call(int fd,unsigned long r,void *p) { int v; do { v=ioctl(fd,r,p); } while(v<0 && errno==EINTR); return v<0?-errno:v; }
 int vv_probe(const char *path,struct info *i) {
  int fd=open(path,O_RDWR|O_NONBLOCK|O_CLOEXEC); if(fd<0)return -errno;
@@ -47,6 +47,7 @@ void vv_close(struct device *d) {
  if(!d)return;
  if(d->on)call(d->fd,VIDIOC_STREAMOFF,&d->type);
  for(unsigned i=0;i<BUFS;i++)for(unsigned p=0;p<5;p++)if(d->map[i][p]) {
+  if(d->cpu[i][p]){struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW};call(d->dma_fd[i][p],DMA_BUF_IOCTL_SYNC,&sync);}
   if(d->memory!=V4L2_MEMORY_USERPTR)munmap(d->map[i][p],d->len[i][p]); else free(d->map[i][p]);
  }
  for(unsigned i=0;i<BUFS;i++)for(unsigned p=0;p<5;p++)if(d->dma_fd[i][p]>=0)close(d->dma_fd[i][p]);
@@ -95,12 +96,12 @@ int vv_open(const char *path,unsigned output,int index,unsigned reduced,uint32_t
 int vv_buffer(struct device *d,unsigned index,struct frame *f) {
  if(index>=d->count)return -EINVAL;
  memset(f,0,sizeof(*f));f->index=index;
- for(unsigned p=0;p<5;p++){f->data[p]=d->map[index][p];f->len[p]=d->len[index][p];if(d->memory==V4L2_MEMORY_DMABUF){struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_START|DMA_BUF_SYNC_RW};int r=call(d->dma_fd[index][p],DMA_BUF_IOCTL_SYNC,&sync);if(r<0)return r;}}return 0;
+ for(unsigned p=0;p<5;p++){f->data[p]=d->map[index][p];f->len[p]=d->len[index][p];if(d->memory==V4L2_MEMORY_DMABUF && !d->cpu[index][p]){struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_START|DMA_BUF_SYNC_RW};int r=call(d->dma_fd[index][p],DMA_BUF_IOCTL_SYNC,&sync);if(r<0)return r;d->cpu[index][p]=1;}}return 0;
 }
 int vv_queue(struct device *d,const struct frame *f) {
  if(f->index>=d->count)return -EINVAL;
  struct v4l2_plane p[5]={0};struct v4l2_buffer b={.index=f->index,.type=d->type,.memory=d->memory,.length=5,.m.planes=p};
- for(unsigned j=0;j<5;j++){if(f->len[j]>d->len[f->index][j])return -EOVERFLOW;p[j].length=d->len[f->index][j];p[j].bytesused=f->len[j];if(d->memory==V4L2_MEMORY_USERPTR)p[j].m.userptr=(unsigned long)d->map[f->index][j];if(d->memory==V4L2_MEMORY_DMABUF){p[j].m.fd=d->dma_fd[f->index][j];struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW};int r=call(p[j].m.fd,DMA_BUF_IOCTL_SYNC,&sync);if(r<0)return r;}}
+ for(unsigned j=0;j<5;j++){if(f->len[j]>d->len[f->index][j])return -EOVERFLOW;p[j].length=d->len[f->index][j];p[j].bytesused=f->len[j];if(d->memory==V4L2_MEMORY_USERPTR)p[j].m.userptr=(unsigned long)d->map[f->index][j];if(d->memory==V4L2_MEMORY_DMABUF){p[j].m.fd=d->dma_fd[f->index][j];struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW};if(d->cpu[f->index][j]){int r=call(p[j].m.fd,DMA_BUF_IOCTL_SYNC,&sync);if(r<0)return r;d->cpu[f->index][j]=0;}}}
  return call(d->fd,VIDIOC_QBUF,&b);
 }
 int vv_start(struct device *d) {int r=call(d->fd,VIDIOC_STREAMON,&d->type);if(r>=0)d->on=1;return r;}

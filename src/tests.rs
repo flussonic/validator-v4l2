@@ -274,3 +274,103 @@ fn teletext_header_and_row_roundtrip() {
         assert_eq!(op.iter().fold(0u8, |s, b| s.wrapping_add(*b)), 0);
     }
 }
+
+#[test]
+fn frozen_counter_text_is_detected_independently_of_picture_marker() {
+    let (l, m) = geometry("SDUY");
+    let c = Config::default();
+    let mut g = Generator::new(c.clone());
+    let mut buffers: [Vec<u8>; 5] = [
+        vec![0; l.stride as usize * l.height as usize],
+        vec![0; 262144],
+        vec![0; 262144],
+        vec![0; 128],
+        vec![0; 48960],
+    ];
+    let fill = |g: &mut Generator, buffers: &mut [Vec<u8>; 5]| {
+        let [a, b, c, d, e] = buffers;
+        g.fill(
+            [
+                a.as_mut_slice(),
+                b.as_mut_slice(),
+                c.as_mut_slice(),
+                d.as_mut_slice(),
+                e.as_mut_slice(),
+            ],
+            l,
+            m,
+        )
+        .unwrap()
+    };
+    let lens = fill(&mut g, &mut buffers);
+    let old = buffers[0].clone();
+    let mut stats = Stats::default();
+    stats
+        .frame(
+            std::array::from_fn(|i| &buffers[i][..lens[i] as usize]),
+            l,
+            m,
+            0,
+            0,
+            1,
+            Some(&c),
+        )
+        .unwrap();
+    let lens = fill(&mut g, &mut buffers);
+    let mut picture = sapsan::Picture::new(l.width, l.height, m.num, m.den);
+    picture.render(0);
+    let (x, y, w, h) = picture.frame_rect().unwrap();
+    for yy in y..y + h {
+        let range = yy * l.stride as usize + x * 2..yy * l.stride as usize + (x + w) * 2;
+        buffers[0][range.clone()].copy_from_slice(&old[range]);
+    }
+    assert_eq!(marker(&buffers[0], l).unwrap(), 1);
+    let e = stats
+        .frame(
+            std::array::from_fn(|i| &buffers[i][..lens[i] as usize]),
+            l,
+            m,
+            1,
+            0,
+            2,
+            Some(&c),
+        )
+        .unwrap_err();
+    assert!(e.contains("frame-counter text"));
+}
+
+#[test]
+fn encoded_audio_payload_corruption_is_detected() {
+    let (l, m) = geometry("SDUY");
+    let c = Config {
+        nonpcm: true,
+        ..Config::default()
+    };
+    let mut g = Generator::new(c.clone());
+    let mut buffers: [Vec<u8>; 5] = [
+        vec![0; l.stride as usize * l.height as usize],
+        vec![0; 262144],
+        vec![0; 262144],
+        vec![0; 128],
+        vec![0; 48960],
+    ];
+    let [a, b, cc, d, e] = &mut buffers;
+    let lens = g.fill([a, b, cc, d, e], l, m).unwrap();
+    put32(&mut buffers[1], 128, 0x12340000);
+    let mut stats = Stats::default();
+    stats
+        .frame(
+            std::array::from_fn(|i| &buffers[i][..lens[i] as usize]),
+            l,
+            m,
+            0,
+            0,
+            1,
+            Some(&c),
+        )
+        .unwrap();
+    assert!(stats
+        .errors
+        .iter()
+        .any(|e| e.contains("337M transport payload")));
+}

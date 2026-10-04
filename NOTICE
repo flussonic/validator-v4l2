@@ -8,6 +8,7 @@ GPL-2.0 WITH Linux-syscall-note. This exception allows a userspace application
 to include the header without adopting the GPL. See
 https://www.kernel.org/doc/html/latest/process/license-rules.html
 and https://spdx.org/licenses/Linux-syscall-note.html .
+Original license texts are included in LICENSES/.
 
 No driver implementation, vendor SDK or GPL bench-tool source is included.
 Sapsan drawing provenance and adaptations are documented in docs/generator.md.

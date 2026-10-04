@@ -20,13 +20,13 @@ pub type Result<T> = std::result::Result<T, String>;
 const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and endurance validator
 
   validator-v4l2 list
-  validator-v4l2 quick [--pair /dev/video4=/dev/video0] [--report result.jsonl]
+  validator-v4l2 quick [--pair /dev/video4=/dev/video1] [--report result.jsonl]
   validator-v4l2 transmit --device /dev/video4 --mode 1080p25 [options]
   validator-v4l2 receive --device /dev/video0 [--expect] [options]
-  validator-v4l2 loop --pair /dev/video4=/dev/video0 [options]
-  validator-v4l2 soak --pair /dev/video4=/dev/video0 --duration 86400 [options]
+  validator-v4l2 loop --pair /dev/video4=/dev/video1 [options]
+  validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 [options]
   validator-v4l2 software [options]
-  validator-v4l2 plan --pair /dev/video4=/dev/video0
+  validator-v4l2 plan --pair /dev/video4=/dev/video1
 
 Options:
   --frames N           frames per case (default 50)
@@ -425,8 +425,15 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
             if f.flags & 0x40 != 0 {
                 stats.fail("output V4L2_BUF_FLAG_ERROR");
             }
-            if last_output_seq.is_some_and(|v| f.sequence.wrapping_sub(v) != 1) {
-                stats.fail("output repeated frames");
+            if let Some(last) = last_output_seq {
+                let step = f.sequence.wrapping_sub(last);
+                if step != 1 {
+                    stats.gaps += step.saturating_sub(1) as u64;
+                    stats.fail(format!(
+                        "output sequence discontinuity {last}->{}",
+                        f.sequence
+                    ));
+                }
             }
             last_output_seq = Some(f.sequence);
             let slow = o.number("--slow-ms", 0)?;

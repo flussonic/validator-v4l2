@@ -23,14 +23,14 @@ source is OBSERVED, not an end-to-end PASS. Output nodes need an explicit pair.
 
 ```sh
 # A physical SDI loop on one server; use the actual connected, free nodes.
-./validator-v4l2 loop --pair /dev/video4=/dev/video0 --mode 1080p25 --frames 250
+./validator-v4l2 loop --pair /dev/video4=/dev/video1 --mode 1080p25 --frames 250
 # Quick coverage of advertised modes/formats up to UHD/DCI 4K, plus features.
-./validator-v4l2 plan --pair /dev/video4=/dev/video0
-./validator-v4l2 quick --pair /dev/video4=/dev/video0 --report matrix.jsonl
+./validator-v4l2 plan --pair /dev/video4=/dev/video1
+./validator-v4l2 quick --pair /dev/video4=/dev/video1 --report matrix.jsonl
 # Every timing/format combination.
-./validator-v4l2 quick --pair /dev/video4=/dev/video0 --exhaustive --report full.jsonl
+./validator-v4l2 quick --pair /dev/video4=/dev/video1 --exhaustive --report full.jsonl
 # Repeat the matrix in a reproducible random order for a day.
-./validator-v4l2 soak --pair /dev/video4=/dev/video0 --duration 86400 --seed 1 --report soak.jsonl
+./validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 --seed 1 --report soak.jsonl
 # Output-only endurance on one server without a connected receiver.
 ./validator-v4l2 soak --device /dev/video4 --duration 3600 --report output.jsonl
 # Test the software generator/validator without a board.
@@ -50,11 +50,12 @@ For two servers, install the same executable on both. The coordinator can
 run on either server or a workstation; SSH uses the configured keys:
 
 ```sh
-./validator-v4l2 loop --tx-host root@sender --rx-host root@receiver --remote-bin /usr/local/bin/validator-v4l2 --pair /dev/video4=/dev/video0 --mode 1080p25
-./validator-v4l2 quick --tx-host root@sender --rx-host root@receiver --pair /dev/video4=/dev/video0 --report remote.jsonl
+./validator-v4l2 loop --tx-host root@sender --rx-host root@receiver --remote-bin /usr/local/bin/validator-v4l2 --pair /dev/video4=/dev/video1 --mode 1080p25
+./validator-v4l2 quick --tx-host root@sender --rx-host root@receiver --pair /dev/video4=/dev/video1 --report remote.jsonl
 ```
 
 Reports are append-only JSON Lines. Exit 0 means no attempted case failed,
 1 means validation failure, 2 means invalid arguments or an operational error.
 A report with SKIP/OBSERVED entries does not certify all functions. Actual
 coverage and limitations are documented in [coverage](docs/coverage.md).
+

@@ -5,7 +5,7 @@ use crate::{
     Result,
 };
 use std::collections::BTreeMap;
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct Stats {
     pub frames: u64,
     pub gaps: u64,
@@ -26,6 +26,8 @@ pub struct Stats {
     last_marker: Option<u64>,
     phase: Option<u64>,
     observed_audio: bool,
+    picture: Option<crate::sapsan::Picture>,
+    encoded_phase: Option<u64>,
 }
 impl Stats {
     pub fn fail(&mut self, msg: impl Into<String>) {
@@ -157,6 +159,25 @@ impl Stats {
         };
         if let (Some(c), Some(frame)) = (expect, mark) {
             check_video(p[0], l, frame, m)?;
+            if self.picture.is_none() {
+                self.picture = Some(crate::sapsan::Picture::new(l.width, l.height, m.num, m.den));
+            }
+            let picture = self.picture.as_mut().unwrap();
+            picture.render(frame);
+            if let Some((x, y, w, h)) = picture.frame_rect() {
+                let expected = picture.image();
+                let step = (l.width as usize / 640).min(l.height as usize / 360).max(1);
+                for yy in (y..y + h).step_by(step) {
+                    for xx in (x..x + w).step_by(step) {
+                        let got = luma(p[0], l, xx as u32, yy as u32)?;
+                        let want = expected[yy * l.width as usize + xx] as u16 * 4;
+                        if got.abs_diff(want) > 16 {
+                            return Err("Sapsan frame-counter text mismatch".into());
+                        }
+                    }
+                }
+            }
+
             if let Some(last) = self.last_marker {
                 if frame != last.wrapping_add(1) {
                     self.fail(format!("picture marker discontinuity {last}->{frame}"));
@@ -221,6 +242,33 @@ impl Stats {
         }
         self.measured |= active;
         if let Some(c) = expect {
+            if c.nonpcm {
+                if self.encoded_phase.is_none() {
+                    for i in 0..declared {
+                        if get32(words, i * 64)? >> 16 == 0xf872
+                            && get32(words, i * 64 + 4)? >> 16 == 0x4e1f
+                        {
+                            self.encoded_phase = Some((1536 - i as u64 % 1536) % 1536);
+                            break;
+                        }
+                    }
+                }
+                if let Some(phase) = self.encoded_phase {
+                    let mut bad = 0;
+                    for i in 0..declared {
+                        for ch in 0..2 {
+                            let got = get32(words, i * 64 + ch * 4)? & 0xffffff00;
+                            if got != encoded_word(phase + i as u64, ch) {
+                                bad += 1;
+                            }
+                        }
+                    }
+                    if bad != 0 {
+                        self.fail(format!("{bad} SMPTE 337M transport payload mismatches"));
+                    }
+                    self.encoded_phase = Some((phase + declared as u64) % 1536);
+                }
+            }
             let begin = if c.nonpcm { 2 } else { 0 };
             if declared != 0 && !self.observed_audio {
                 // Solve a common initial phase from all PCM channels, not just channel 1.
@@ -273,6 +321,9 @@ impl Stats {
         if let Some(c) = expect {
             if self.audio_samples == 0 {
                 self.fail("no audio received");
+            }
+            if c.nonpcm && self.encoded_phase.is_none() {
+                self.fail("no valid SMPTE 337M preamble received");
             }
             if c.anc && self.anc.is_empty() {
                 self.fail("no ANC received");
