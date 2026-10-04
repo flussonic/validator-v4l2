@@ -30,6 +30,7 @@ const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and enduranc
 
 Options:
   --frames N           frames per case (default 50)
+  --warmup N           discard startup capture frames (paired default 4, receive 0)
   --mode NAME          enumerated timing: 1080p25 or 3840x2160p50.000
   --format FOURCC      default SDUY; SDYU SDYV SD16 SD10 SDAR SDXU
   --channels N         generated/expected PCM channels, 1..16 (default 16)
@@ -86,6 +87,7 @@ impl Options {
                 "--device",
                 "--pair",
                 "--frames",
+                "--warmup",
                 "--mode",
                 "--format",
                 "--channels",
@@ -126,6 +128,7 @@ impl Options {
         if o.number("--frames", 50)? == 0 || o.number("--timeout-ms", 3000)? == 0 {
             return Err("frames and timeout must be positive".into());
         }
+        o.u32("--warmup", 0)?;
         Ok(o)
     }
     fn get<'a>(&'a self, k: &str, d: &'a str) -> &'a str {
@@ -412,7 +415,9 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         d.queue(&f)?;
     }
     d.start()?;
-    let baseline = attrs(p);
+    let mut baseline = attrs(p);
+    let warmup = if output { 0 } else { o.u32("--warmup", 0)? };
+    let mut discarded = 0;
     let expect = if o.has("--expect") { Some(&c) } else { None };
     while stats.frames < frames
         && (duration == 0 || started.elapsed() < Duration::from_secs(duration))
@@ -420,6 +425,15 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     {
         let mut f = d.next(timeout)?;
         stats.source_events += f.events as u64;
+        if !output && discarded < warmup {
+            f.len = [0; 5];
+            d.queue(&f)?;
+            discarded += 1;
+            if discarded == warmup {
+                baseline = attrs(p);
+            }
+            continue;
+        }
         if output {
             stats.frames += 1;
             if f.flags & 0x40 != 0 {
@@ -504,7 +518,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         "PASS"
     };
     let detail = format!(
-        "{} {} {} elapsed={:.3}s counters={:?}",
+        "{} {} {} elapsed={:.3}s startup_discarded={} counters={:?}",
         if output {
             "output queue completed; reception requires a pair"
         } else {
@@ -513,6 +527,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         d.mode.name(),
         code(d.layout.fourcc),
         started.elapsed().as_secs_f64(),
+        discarded,
         after
     );
     emit(o.report(), status, p, &detail, Some(&stats))?;
@@ -686,7 +701,10 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         .next_back()
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(25.);
-    let duration = (o.number("--frames", 50)? as f64 / rate.max(1.) * 2.).ceil() as u64 + 5;
+    let captured = o
+        .number("--frames", 50)?
+        .saturating_add(o.u32("--warmup", 4)? as u64);
+    let duration = (captured as f64 / rate.max(1.) * 2.).ceil() as u64 + 5;
     ta.extend([
         "--duration".into(),
         duration.to_string(),
@@ -708,6 +726,8 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         o.number("--frames", 50)?.to_string(),
         "--timeout-ms".into(),
         o.u32("--timeout-ms", 3000)?.to_string(),
+        "--warmup".into(),
+        o.u32("--warmup", 4)?.to_string(),
     ];
     ra.extend(case_args(case));
     // Capture enumeration indices are vendor-specific: the mode name is resolved independently.

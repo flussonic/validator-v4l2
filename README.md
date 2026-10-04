@@ -43,6 +43,9 @@ sequence gaps, timestamps and exposed driver counters. Modes, formats and
 settings are discovered from the driver. SIGINT/SIGTERM stops streaming
 and restores changed sysfs defaults; paired transmitters also stop when
 the receiver finishes. Missing counters remain unknown.
+Paired runs discard four startup capture frames before checking payloads and
+counter increases. `--warmup 0` includes startup; standalone `receive` defaults
+to zero. Discarded frames are separate from `--frames` and reported explicitly.
 The generator includes the Sapsan seven bars, bouncing square, changing
 text and PTS band; see [generator provenance](docs/generator.md).
 
@@ -58,4 +61,3 @@ Reports are append-only JSON Lines. Exit 0 means no attempted case failed,
 1 means validation failure, 2 means invalid arguments or an operational error.
 A report with SKIP/OBSERVED entries does not certify all functions. Actual
 coverage and limitations are documented in [coverage](docs/coverage.md).
-
