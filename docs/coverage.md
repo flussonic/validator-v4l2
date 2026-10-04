@@ -38,5 +38,4 @@ VITC or line-21 captions. Genlock, clock trimming, reference offsets, cable
 loss/replug, PCI removal, suspend/resume and encoded-audio decoding require
 external stimuli; inventory reports their settings but does not certify them.
 Busy/disconnected inputs cannot prove capture support. Software validation
-checks userspace only. Remote output currently requires an explicit mode;
-run `plan` on that server to obtain the complete advertised matrix.
+checks userspace only. The same matrix can be fetched automatically over SSH from the transmitter.

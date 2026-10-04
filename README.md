@@ -40,6 +40,14 @@ settings are discovered from the driver. Missing counters remain unknown.
 The generator includes the Sapsan seven bars, bouncing square, changing
 text and PTS band; see [generator provenance](docs/generator.md).
 
+For two servers, install the same executable on both. The coordinator can
+run on either server or a workstation; SSH uses the configured keys:
+
+```sh
+./validator-v4l2 loop --tx-host root@sender --rx-host root@receiver --remote-bin /usr/local/bin/validator-v4l2 --pair /dev/video4=/dev/video0 --mode 1080p25
+./validator-v4l2 quick --tx-host root@sender --rx-host root@receiver --pair /dev/video4=/dev/video0 --report remote.jsonl
+```
+
 Reports are append-only JSON Lines. Exit 0 means no attempted case failed,
 1 means validation failure, 2 means invalid arguments or an operational error.
 A report with SKIP/OBSERVED entries does not certify all functions. Actual

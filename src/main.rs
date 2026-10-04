@@ -718,7 +718,10 @@ fn quick(o: &Options) -> Result<bool> {
         match stream(&capture, false) {
             Ok(pass) => ok &= pass,
             Err(e)
-                if e.contains("errno 67") || e.contains("errno 61") || e.contains("errno 11") =>
+                if e.contains("errno 67")
+                    || e.contains("errno 61")
+                    || e.contains("errno 11")
+                    || e.contains("errno 16") =>
             {
                 emit(
                     o.report(),
@@ -736,28 +739,102 @@ fn quick(o: &Options) -> Result<bool> {
     }
     Ok(ok)
 }
-fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
-    let (tx, _) = pair(o)?;
-    if o.values.contains_key("--tx-host") {
-        let mut remote = vec!["plan".into(), "--pair".into(), o.required("--pair")?.into()];
-        if let Some(v) = o.values.get("--mode") {
-            remote.extend(["--mode".into(), v.clone()]);
+fn wire_case(c: &Case) -> String {
+    let v = &c.config;
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        c.mode,
+        c.format,
+        v.flags,
+        v.channels,
+        v.alternate,
+        v.pad,
+        v.no_meta as u8,
+        v.nonpcm as u8,
+        v.anc as u8,
+        v.vbi as u8,
+        c.memory
+    )
+}
+fn parse_plan(text: &str) -> Result<Vec<Case>> {
+    let mut cases = vec![];
+    for line in text.lines() {
+        let p: Vec<_> = line.split('\t').collect();
+        if p.len() != 11 {
+            return Err("malformed remote plan".into());
         }
-        if let Some(v) = o.values.get("--format") {
-            remote.extend(["--format".into(), v.clone()]);
+        let n = |i: usize| {
+            p[i].parse::<u32>()
+                .map_err(|_| "invalid remote plan number".to_string())
+        };
+        let c = Config {
+            flags: n(2)?,
+            channels: n(3)?,
+            alternate: n(4)?,
+            pad: n(5)?,
+            no_meta: n(6)? != 0,
+            nonpcm: n(7)? != 0,
+            anc: n(8)? != 0,
+            vbi: n(9)? != 0,
+        };
+        if !(1..=16).contains(&c.channels)
+            || c.pad > 2048
+            || c.flags & !63 != 0
+            || c.flags & 48 == 48
+            || !["mmap", "userptr", "dmabuf"].contains(&p[10])
+            || !FORMATS.contains(&p[1])
+        {
+            return Err("invalid remote plan case".into());
         }
-        // Remote inventory must be fetched before local planning; require a selected mode for portable orchestration.
-        if !o.values.contains_key("--mode") {
-            return Err("remote TX requires --mode; run plan on TX for its full matrix".into());
+        cases.push(Case {
+            mode: p[0].into(),
+            format: p[1].into(),
+            config: c,
+            memory: p[10].into(),
+        });
+        if cases.len() > 100000 {
+            return Err("oversize remote plan".into());
         }
     }
+    Ok(cases)
+}
+fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
+    let (tx, _) = pair(o)?;
     let mut cases = if o.values.contains_key("--tx-host") {
-        vec![Case {
-            mode: o.required("--mode")?.into(),
-            format: o.get("--format", "SDUY").into(),
-            config: o.config()?,
-            memory: o.get("--memory", "mmap").into(),
-        }]
+        let mut args = vec![
+            "plan".into(),
+            "--wire-plan".into(),
+            "--pair".into(),
+            o.required("--pair")?.into(),
+        ];
+        for key in [
+            "--mode",
+            "--format",
+            "--channels",
+            "--flags",
+            "--alternate",
+            "--pad",
+            "--memory",
+        ] {
+            if let Some(v) = o.values.get(key) {
+                args.extend([key.into(), v.clone()]);
+            }
+        }
+        for key in ["--no-anc", "--no-vbi", "--nonpcm", "--no-meta"] {
+            if o.has(key) {
+                args.push(key.into());
+            }
+        }
+        let result = command(o, "--tx-host", &args)?
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err(format!(
+                "remote plan: {}",
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+        parse_plan(&String::from_utf8(result.stdout).map_err(|e| e.to_string())?)?
     } else {
         matrix(o, tx)?
     };
@@ -919,13 +996,17 @@ fn run(o: &Options) -> Result<bool> {
         "plan" => {
             let (tx, _) = pair(o)?;
             for c in matrix(o, tx)? {
-                emit(
-                    o.report(),
-                    "PLAN",
-                    &format!("{c:?}"),
-                    "physical loop or two-server SDI connection required",
-                    None,
-                )?;
+                if o.has("--wire-plan") {
+                    println!("{}", wire_case(&c));
+                } else {
+                    emit(
+                        o.report(),
+                        "PLAN",
+                        &format!("{c:?}"),
+                        "physical loop or two-server SDI connection required",
+                        None,
+                    )?;
+                }
             }
             Ok(true)
         }

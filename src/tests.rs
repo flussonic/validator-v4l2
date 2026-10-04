@@ -240,3 +240,23 @@ fn copied_pts_band_roundtrips() {
         );
     }
 }
+
+#[test]
+fn remote_plan_is_lossless_and_rejects_bad_payload() {
+    let c = Case {
+        mode: "3840x2160p59.940".into(),
+        format: "SD10".into(),
+        config: Config {
+            flags: 24,
+            channels: 8,
+            alternate: 25,
+            ..Config::default()
+        },
+        memory: "dmabuf".into(),
+    };
+    let wire = wire_case(&c);
+    let back = parse_plan(&wire).unwrap();
+    assert_eq!(wire_case(&back[0]), wire);
+    assert!(parse_plan("bad").is_err());
+    assert!(parse_plan(&wire.replace("\t8\t25", "\t99\t25")).is_err());
+}

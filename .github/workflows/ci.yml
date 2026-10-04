@@ -1,0 +1,18 @@
+name: Linux
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        rust: ['1.75.0', stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '${{ matrix.rust }}'
+          components: rustfmt, clippy
+      - run: make
+      - run: make test
+      - run: make check
+      - run: ./validator-v4l2 software --frames 4
