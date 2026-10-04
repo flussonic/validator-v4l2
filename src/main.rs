@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 mod device;
+mod eac3;
 mod pattern;
 mod report;
 mod sapsan;
@@ -38,6 +39,8 @@ Options:
   --alternate N        alternate flags every N frames, within a stream
   --no-anc --no-vbi    exclude ANC or VBI from generated/expected payload
   --nonpcm             SMPTE 337M transport fixture on channels 1 and 2
+  --eac3               valid six-channel E-AC-3 in ST 337/340 on channels 1/2
+  --windowed-audio     check average cadence for timestamp-sliced audio
   --pad N --no-meta    audio padding / missing output metadata tests
   --memory mmap|userptr|dmabuf  buffer allocation (default mmap)
   --slow-ms N          deliberately delay output refill (fault injection)
@@ -75,6 +78,8 @@ impl Options {
                 "--no-anc",
                 "--no-vbi",
                 "--nonpcm",
+                "--eac3",
+                "--windowed-audio",
                 "--no-meta",
                 "--wire-plan",
                 "--stop-on-stdin",
@@ -162,7 +167,7 @@ impl Options {
         if flags & !63 != 0 || flags & 48 == 48 {
             return Err("invalid metadata flags (HLG and PQ are exclusive)".into());
         }
-        if self.has("--nonpcm") && channels < 2 {
+        if (self.has("--nonpcm") || self.has("--eac3")) && channels < 2 {
             return Err("nonpcm needs at least two channels".into());
         }
         let pad = self.u32("--pad", 0)?;
@@ -175,7 +180,8 @@ impl Options {
             alternate: self.u32("--alternate", 0)?,
             pad,
             no_meta: self.has("--no-meta"),
-            nonpcm: self.has("--nonpcm"),
+            nonpcm: self.has("--nonpcm") || self.has("--eac3"),
+            eac3: self.has("--eac3"),
             anc: !self.has("--no-anc"),
             vbi: !self.has("--no-vbi"),
         })
@@ -398,6 +404,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     )?;
     let mut gen = Generator::new(c.clone());
     let mut stats = Stats::default();
+    stats.windowed_audio = o.has("--windowed-audio");
     let frames = o.number("--frames", 50)?;
     let timeout = o.u32("--timeout-ms", 3000)?;
     let duration = o.number("--duration", 0)?;
@@ -607,8 +614,12 @@ fn matrix(o: &Options, p: &str) -> Result<Vec<Case>> {
             let mut c = base.clone();
             c.config.no_meta = true;
             cases.push(c);
+            let mut c = base.clone();
+            c.config.nonpcm = true;
+            cases.push(c);
             let mut c = base;
             c.config.nonpcm = true;
+            c.config.eac3 = true;
             cases.push(c);
         }
     }
@@ -636,6 +647,7 @@ fn case_args(case: &Case) -> Vec<String> {
         (!c.anc, "--no-anc"),
         (!c.vbi, "--no-vbi"),
         (c.nonpcm, "--nonpcm"),
+        (c.eac3, "--eac3"),
         (c.no_meta, "--no-meta"),
     ] {
         if on {
@@ -730,6 +742,9 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         o.u32("--warmup", 4)?.to_string(),
     ];
     ra.extend(case_args(case));
+    if o.has("--windowed-audio") {
+        ra.push("--windowed-audio".into());
+    }
     // Capture enumeration indices are vendor-specific: the mode name is resolved independently.
     let result = command(o, "--rx-host", &ra)?.output();
     if let Some(mut input) = child.stdin.take() {
@@ -809,7 +824,7 @@ fn quick(o: &Options) -> Result<bool> {
 fn wire_case(c: &Case) -> String {
     let v = &c.config;
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         c.mode,
         c.format,
         v.flags,
@@ -820,14 +835,15 @@ fn wire_case(c: &Case) -> String {
         v.nonpcm as u8,
         v.anc as u8,
         v.vbi as u8,
-        c.memory
+        c.memory,
+        v.eac3 as u8
     )
 }
 fn parse_plan(text: &str) -> Result<Vec<Case>> {
     let mut cases = vec![];
     for line in text.lines() {
         let p: Vec<_> = line.split('\t').collect();
-        if p.len() != 11 {
+        if p.len() != 12 {
             return Err("malformed remote plan".into());
         }
         let n = |i: usize| {
@@ -841,6 +857,7 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
             pad: n(5)?,
             no_meta: n(6)? != 0,
             nonpcm: n(7)? != 0,
+            eac3: n(11)? != 0,
             anc: n(8)? != 0,
             vbi: n(9)? != 0,
         };
@@ -848,6 +865,8 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
             || c.pad > 2048
             || c.flags & !63 != 0
             || c.flags & 48 == 48
+            || (c.nonpcm && c.channels < 2)
+            || (c.eac3 && !c.nonpcm)
             || !["mmap", "userptr", "dmabuf"].contains(&p[10])
             || !FORMATS.contains(&p[1])
         {
@@ -899,6 +918,7 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
             "--no-anc",
             "--no-vbi",
             "--nonpcm",
+            "--eac3",
             "--no-meta",
             "--exhaustive",
         ] {
@@ -1031,7 +1051,6 @@ fn software(o: &Options) -> Result<bool> {
             };
             let mut buffers: [Vec<u8>; 5] = std::array::from_fn(|p| vec![0; l.sizes[p] as usize]);
             let mut c = o.config()?;
-            c.nonpcm = false;
             c.flags = 24;
             c.alternate = 3;
             let mut gen = Generator::new(c.clone());

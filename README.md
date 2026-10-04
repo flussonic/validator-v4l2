@@ -24,6 +24,8 @@ source is OBSERVED, not an end-to-end PASS. Output nodes need an explicit pair.
 ```sh
 # A physical SDI loop on one server; use the actual connected, free nodes.
 ./validator-v4l2 loop --pair /dev/video4=/dev/video1 --mode 1080p25 --frames 250
+# Valid 5.1 E-AC-3 on a two-slot SDI carrier.
+./validator-v4l2 loop --pair /dev/video4=/dev/video1 --mode 1080p25 --channels 2 --eac3
 # Quick coverage of advertised modes/formats up to UHD/DCI 4K, plus features.
 ./validator-v4l2 plan --pair /dev/video4=/dev/video1
 ./validator-v4l2 quick --pair /dev/video4=/dev/video1 --report matrix.jsonl
@@ -48,6 +50,11 @@ counter increases. `--warmup 0` includes startup; standalone `receive` defaults
 to zero. Discarded frames are separate from `--frames` and reported explicitly.
 The generator includes the Sapsan seven bars, bouncing square, changing
 text and PTS band; see [generator provenance](docs/generator.md).
+Encoded audio uses the bundled [synthetic E-AC-3 fixture](fixtures/README.md).
+For inputs that slice audio using packet timestamps, `--windowed-audio`
+checks the whole-run sample count within 0.1% plus a tenth of a frame,
+allows per-frame count jitter and still checks every tone sample and continuity.
+The default checks each frame's sample count within one sample.
 
 For two servers, install the same executable on both. The coordinator can
 run on either server or a workstation; SSH uses the configured keys:

@@ -38,6 +38,7 @@ pub struct Config {
     pub pad: u32,
     pub no_meta: bool,
     pub nonpcm: bool,
+    pub eac3: bool,
     pub anc: bool,
     pub vbi: bool,
 }
@@ -50,6 +51,7 @@ impl Default for Config {
             pad: 0,
             no_meta: false,
             nonpcm: false,
+            eac3: false,
             anc: true,
             vbi: true,
         }
@@ -325,6 +327,20 @@ pub fn encoded_word(phase: u64, ch: usize) -> u32 {
         .unwrap_or(0) as u32)
         << 16
 }
+pub fn encoded_period(c: &Config) -> u64 {
+    if c.eac3 {
+        crate::eac3::period()
+    } else {
+        1536
+    }
+}
+pub fn encoded_word_for(phase: u64, ch: usize, c: &Config) -> u32 {
+    if c.eac3 {
+        crate::eac3::word(phase, ch)
+    } else {
+        encoded_word(phase, ch)
+    }
+}
 pub fn audio(b: &mut [u8], samples: usize, phase: u64, c: &Config) -> Result<()> {
     if (samples + c.pad as usize) * 64 > b.len() {
         return Err("audio buffer too small".into());
@@ -336,7 +352,7 @@ pub fn audio(b: &mut [u8], samples: usize, phase: u64, c: &Config) -> Result<()>
             } else if ch >= c.channels as usize {
                 0
             } else if c.nonpcm && ch < 2 {
-                encoded_word(phase + i as u64, ch)
+                encoded_word_for(phase + i as u64, ch, c)
             } else {
                 (tone(phase + i as u64, ch) as u32) << 8
             };

@@ -7,6 +7,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Default)]
 pub struct Stats {
+    pub windowed_audio: bool,
     pub frames: u64,
     pub gaps: u64,
     pub errors: Vec<String>,
@@ -28,6 +29,7 @@ pub struct Stats {
     observed_audio: bool,
     picture: Option<crate::sapsan::Picture>,
     encoded_phase: Option<u64>,
+    expected_audio: f64,
 }
 impl Stats {
     pub fn fail(&mut self, msg: impl Into<String>) {
@@ -126,7 +128,13 @@ impl Stats {
         self.audio_samples += declared as u64;
         if expect.is_some() {
             let nominal = 48000. * m.den as f64 / m.num as f64;
-            if (declared as f64 - nominal).abs() > 1.01 {
+            self.expected_audio += nominal;
+            let tolerance = if self.windowed_audio {
+                nominal * 0.25
+            } else {
+                1.01
+            };
+            if (declared as f64 - nominal).abs() > tolerance {
                 self.fail(format!("audio cadence {declared}, expected {nominal:.3}"));
             }
         }
@@ -196,7 +204,11 @@ impl Stats {
                     c.channels
                 ));
             }
-            if c.nonpcm && nonpcm & 3 != 3 {
+            let preamble = (0..declared).any(|i| {
+                get32(p[1], i * 64).is_ok_and(|v| v >> 16 == 0xf872)
+                    && get32(p[1], i * 64 + 4).is_ok_and(|v| v >> 16 == 0x4e1f)
+            });
+            if c.nonpcm && preamble && nonpcm & 3 != 3 {
                 self.fail("SMPTE 337M channels not detected");
             }
             if c.anc {
@@ -243,12 +255,30 @@ impl Stats {
         self.measured |= active;
         if let Some(c) = expect {
             if c.nonpcm {
+                let period = encoded_period(c);
                 if self.encoded_phase.is_none() {
                     for i in 0..declared {
                         if get32(words, i * 64)? >> 16 == 0xf872
                             && get32(words, i * 64 + 4)? >> 16 == 0x4e1f
+                            && declared - i >= 16
                         {
-                            self.encoded_phase = Some((1536 - i as u64 % 1536) % 1536);
+                            let mut best = (u64::MAX, 0);
+                            for start in (0..period).step_by(1536) {
+                                let mut score = 0;
+                                for j in i..declared.min(i + 128) {
+                                    for ch in 0..2 {
+                                        let got = get32(words, j * 64 + ch * 4)? & 0xffffff00;
+                                        if got != encoded_word_for(start + (j - i) as u64, ch, c) {
+                                            score += 1;
+                                        }
+                                    }
+                                }
+                                if score < best.0 {
+                                    best = (score, start);
+                                }
+                            }
+                            self.encoded_phase =
+                                Some((best.1 + period - i as u64 % period) % period);
                             break;
                         }
                     }
@@ -258,7 +288,7 @@ impl Stats {
                     for i in 0..declared {
                         for ch in 0..2 {
                             let got = get32(words, i * 64 + ch * 4)? & 0xffffff00;
-                            if got != encoded_word(phase + i as u64, ch) {
+                            if got != encoded_word_for(phase + i as u64, ch, c) {
                                 bad += 1;
                             }
                         }
@@ -266,7 +296,7 @@ impl Stats {
                     if bad != 0 {
                         self.fail(format!("{bad} SMPTE 337M transport payload mismatches"));
                     }
-                    self.encoded_phase = Some((phase + declared as u64) % 1536);
+                    self.encoded_phase = Some((phase + declared as u64) % period);
                 }
             }
             let begin = if c.nonpcm { 2 } else { 0 };
@@ -319,11 +349,24 @@ impl Stats {
             self.fail("no frames validated");
         }
         if let Some(c) = expect {
+            if self.windowed_audio && self.frames != 0 {
+                let allowance =
+                    self.expected_audio * 0.001 + self.expected_audio / self.frames as f64 * 0.1;
+                if (self.audio_samples as f64 - self.expected_audio).abs() > allowance {
+                    self.fail(format!(
+                        "audio window {} samples, expected {:.3} +/- {:.3}",
+                        self.audio_samples, self.expected_audio, allowance
+                    ));
+                }
+            }
             if self.audio_samples == 0 {
                 self.fail("no audio received");
             }
             if c.nonpcm && self.encoded_phase.is_none() {
                 self.fail("no valid SMPTE 337M preamble received");
+            }
+            if c.nonpcm && self.nonpcm & 3 != 3 {
+                self.fail("no SMPTE 337M channel mask received");
             }
             if c.anc && self.anc.is_empty() {
                 self.fail("no ANC received");

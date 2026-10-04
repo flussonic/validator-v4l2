@@ -19,6 +19,9 @@ Implemented checks:
   channel order, cadence, continuity, padding and missing output metadata.
 - SMPTE 337M transport fixture, exact burst payload/continuity and non-PCM metadata. The fixture is
   a transport test, not an encoded AC-3/Dolby E decoder test.
+- Real E-AC-3 5.1 syncframes in ST 337/340 type 16, with exact compressed
+  payload, bit length, padding and continuity checks across capture boundaries.
+  FFmpeg is needed only to regenerate or independently decode the fixture.
 - ANC header/UDW bounds and parity, checksum flags, line bounds and exact
   frame-associated payloads for ATC, AFD, SCTE-104, OP-47, captions and a
   private frame counter. Caption payloads are transport fixtures,

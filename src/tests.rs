@@ -81,6 +81,122 @@ fn fractional_audio_cadence_has_no_drift() {
     }
     assert_eq!(sum, 480480);
 }
+
+#[test]
+fn eac3_bursts_preserve_real_frames_across_video_boundaries() {
+    let frames = eac3::frames();
+    assert_eq!(frames.len(), 8);
+    for (n, frame) in frames.iter().enumerate() {
+        assert_eq!((frame[4] >> 1) & 7, 7); // 3 front, 2 surround.
+        assert_eq!(frame[4] & 1, 1); // LFE, six decoded channels in total.
+        let phase = n as u64 * 1536;
+        assert_eq!(eac3::word(phase + 1, 0) >> 16, 16);
+        assert_eq!(eac3::word(phase + 1, 1) >> 16, (frame.len() * 8) as u32);
+        let recovered: Vec<_> = (0..frame.len() / 2)
+            .flat_map(|i| {
+                ((eac3::word(phase + 2 + i as u64 / 2, i % 2) >> 16) as u16).to_be_bytes()
+            })
+            .collect();
+        assert_eq!(recovered, *frame);
+    }
+    let (l, m) = geometry("SDUY");
+    let config = Config {
+        channels: 2,
+        nonpcm: true,
+        eac3: true,
+        anc: false,
+        vbi: false,
+        ..Config::default()
+    };
+    let mut generator = Generator::new(config.clone());
+    let mut buffers = [
+        vec![0; l.stride as usize * l.height as usize],
+        vec![0; 262144],
+        vec![0; 262144],
+        vec![0; 128],
+        vec![0; 48960],
+    ];
+    let mut stats = Stats::default();
+    for seq in 0..20 {
+        let [a, b, c, d, e] = &mut buffers;
+        let lengths = generator.fill([a, b, c, d, e], l, m).unwrap();
+        if seq == 19 {
+            buffers[1][37 * 64 + 2] ^= 1;
+        }
+        stats
+            .frame(
+                std::array::from_fn(|i| &buffers[i][..lengths[i] as usize]),
+                l,
+                m,
+                seq,
+                0,
+                seq as u64 + 1,
+                Some(&config),
+            )
+            .unwrap();
+        if seq < 19 {
+            assert_eq!(stats.failure_count, 0, "{:?}", stats.errors);
+        }
+    }
+    stats.finish(Some(&config));
+    assert!(stats
+        .errors
+        .iter()
+        .any(|e| e.contains("transport payload mismatches")));
+}
+
+#[test]
+fn windowed_audio_accepts_packet_jitter_but_rejects_sample_loss() {
+    fn run(windowed: bool, loss: usize) -> Stats {
+        let (layout, mut mode) = geometry("SDUY");
+        mode.num = 50;
+        mode.den = 1;
+        let config = Config {
+            channels: 2,
+            anc: false,
+            vbi: false,
+            ..Config::default()
+        };
+        let mut generator = Generator::new(config.clone());
+        let mut buffers = [
+            vec![0; layout.stride as usize * layout.height as usize],
+            vec![0; 262144],
+            vec![0; 262144],
+            vec![0; 128],
+            vec![0; 48960],
+        ];
+        let mut stats = Stats::default();
+        stats.windowed_audio = windowed;
+        let mut phase = 0;
+        for seq in 0..32 {
+            let [a, b, c, d, e] = &mut buffers;
+            let mut lengths = generator.fill([a, b, c, d, e], layout, mode).unwrap();
+            let count = (if seq % 2 == 0 { 968 } else { 952 }) - loss;
+            audio(&mut buffers[1], count, phase, &config).unwrap();
+            put32(&mut buffers[3], 28, count as u32);
+            lengths[1] = (count * 64) as u32;
+            stats
+                .frame(
+                    std::array::from_fn(|i| &buffers[i][..lengths[i] as usize]),
+                    layout,
+                    mode,
+                    seq,
+                    0,
+                    seq as u64 + 1,
+                    Some(&config),
+                )
+                .unwrap();
+            phase += count as u64;
+        }
+        stats.finish(Some(&config));
+        stats
+    }
+    assert!(run(false, 0).failure_count > 0);
+    let good = run(true, 0);
+    assert_eq!(good.failure_count, 0, "{:?}", good.errors);
+    let lost = run(true, 192);
+    assert!(lost.errors.iter().any(|e| e.contains("audio window")));
+}
 #[test]
 fn anc_rejects_truncation_and_parity() {
     let (_, m) = geometry("SDUY");
