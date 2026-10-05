@@ -180,7 +180,9 @@ impl Stats {
                         let got = luma(p[0], l, xx as u32, yy as u32)?;
                         let want = expected[yy * l.width as usize + xx] as u16 * 4;
                         if got.abs_diff(want) > 16 {
-                            return Err("Sapsan frame-counter text mismatch".into());
+                            return Err(format!(
+                                "Sapsan frame-counter text mismatch at {xx},{yy} for picture {frame}: {got}, expected {want}"
+                            ));
                         }
                     }
                 }
