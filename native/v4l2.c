@@ -15,7 +15,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include "sdi_av.h"
-#define BUFS 6
+#define BUFS VIDEO_MAX_FRAME
+#define REQUEST_BUFS 6
 struct info { char driver[16], card[32], bus[32]; uint32_t caps, output; };
 struct mode { uint32_t width,height,interlaced,total_lines; uint64_t num,den; uint32_t index,reduced; };
 struct layout { uint32_t width,height,fourcc,stride,sizes[5]; };
@@ -76,7 +77,7 @@ int vv_open(const char *path,unsigned output,int index,unsigned reduced,uint32_t
  for(unsigned p=0;p<5;p++)l->sizes[p]=f.fmt.pix_mp.plane_fmt[p].sizeimage;
  d->layout=*l;
  struct v4l2_event_subscription sub={.type=V4L2_EVENT_SOURCE_CHANGE}; call(d->fd,VIDIOC_SUBSCRIBE_EVENT,&sub);
- struct v4l2_requestbuffers req={.count=BUFS,.type=d->type,.memory=d->memory}; r=call(d->fd,VIDIOC_REQBUFS,&req); if(r<0)goto fail;
+ struct v4l2_requestbuffers req={.count=REQUEST_BUFS,.type=d->type,.memory=d->memory}; r=call(d->fd,VIDIOC_REQBUFS,&req); if(r<0)goto fail;
  if(!req.count || req.count>BUFS) {r=-EPROTO;goto fail;} d->count=req.count;
  for(unsigned i=0;i<d->count;i++) {
   struct v4l2_plane p[5]={0}; struct v4l2_buffer b={.index=i,.type=d->type,.memory=d->memory,.length=5,.m.planes=p};

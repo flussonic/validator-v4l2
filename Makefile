@@ -9,7 +9,9 @@ test:
 	@if [ "$$(uname -s)" = Linux ]; then \
 	    mkdir -p target; \
 	    $(CC) -std=gnu11 -Wall -Wextra -Iinclude tests/native_events.c -o target/native-events && \
-	    target/native-events; \
+	    target/native-events && \
+	    $(CC) -std=gnu11 -Wall -Wextra -Iinclude tests/native_buffers.c -o target/native-buffers && \
+	    target/native-buffers; \
 	fi
 check:
 	$(CARGO) fmt -- --check
