@@ -17,6 +17,11 @@ Implemented checks:
   requested memory type produce a failing case; heap absence is operational.
 - Audio present mask separately from measured nonzero channels; tone payload,
   channel order, cadence, continuity, padding and missing output metadata.
+- PCM channels share one initial phase and must preserve it throughout capture.
+  A pure initial channel skew is reported with signed offsets in samples;
+  positive offsets mean the waveform leads the common phase. This remains
+  a failing result. A skew explanation requires each channel to match its tone
+  across the entire first frame, so it does not hide later sample corruption.
 - SMPTE 337M transport fixture, exact burst payload/continuity and non-PCM metadata. The fixture is
   a transport test, not an encoded AC-3/Dolby E decoder test.
 - Real E-AC-3 5.1 syncframes in ST 337/340 type 16, with exact compressed

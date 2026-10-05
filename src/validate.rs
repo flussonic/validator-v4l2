@@ -5,6 +5,42 @@ use crate::{
     Result,
 };
 use std::collections::BTreeMap;
+
+fn pcm_phase_offsets(
+    words: &[u8],
+    samples: usize,
+    begin: usize,
+    channels: usize,
+    common: u64,
+) -> Result<Option<String>> {
+    let mut offsets = Vec::new();
+    for ch in begin..channels {
+        let mut best = (u64::MAX, i64::MAX, 0);
+        for offset in -96i64..96 {
+            let phase = (common as i64 + offset).rem_euclid(192) as u64;
+            let mut score = 0u64;
+            for i in 0..samples.min(96) {
+                let got = get32(words, (i * 16 + ch) * 4)? as i32 >> 8;
+                score += got.abs_diff(tone(phase + i as u64, ch)) as u64;
+            }
+            if (score, offset.abs()) < (best.0, best.1) {
+                best = (score, offset.abs(), offset);
+            }
+        }
+        let phase = (common as i64 + best.2).rem_euclid(192) as u64;
+        for i in 0..samples {
+            let got = get32(words, (i * 16 + ch) * 4)? as i32 >> 8;
+            if got.abs_diff(tone(phase + i as u64, ch)) > 8192 {
+                return Ok(None);
+            }
+        }
+        if best.2 != 0 {
+            offsets.push(format!("{}:{:+}", ch + 1, best.2));
+        }
+    }
+    Ok((!offsets.is_empty()).then(|| offsets.join(", ")))
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub windowed_audio: bool,
@@ -302,7 +338,8 @@ impl Stats {
                 }
             }
             let begin = if c.nonpcm { 2 } else { 0 };
-            if declared != 0 && !self.observed_audio {
+            let initial_pcm = declared != 0 && !self.observed_audio;
+            if initial_pcm {
                 // Solve a common initial phase from all PCM channels, not just channel 1.
                 let mut best = (u64::MAX, 0);
                 for phase in 0..192 {
@@ -331,7 +368,19 @@ impl Stats {
                     }
                 }
                 if bad != 0 {
-                    self.fail(format!("{bad} PCM tone/continuity mismatches"));
+                    let mut message = format!("{bad} PCM tone/continuity mismatches");
+                    if initial_pcm {
+                        // Diagnose a pure channel skew, while retaining the common
+                        // phase for all checks and the failing verdict.
+                        if let Some(offsets) =
+                            pcm_phase_offsets(words, declared, begin, c.channels as usize, phase)?
+                        {
+                            message.push_str(&format!(
+                                "; initial channel phase offsets (samples): {offsets}"
+                            ));
+                        }
+                    }
+                    self.fail(message);
                 }
                 self.phase = Some((phase + declared as u64) % 192);
             }

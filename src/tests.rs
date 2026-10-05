@@ -198,6 +198,69 @@ fn windowed_audio_accepts_packet_jitter_but_rejects_sample_loss() {
     assert!(lost.errors.iter().any(|e| e.contains("audio window")));
 }
 #[test]
+fn pcm_reports_channel_skew_without_accepting_it_or_hiding_corruption() {
+    fn run(skew: bool, corrupt: bool) -> Stats {
+        let (layout, mut mode) = geometry("SDUY");
+        mode.num = 25;
+        mode.den = 1;
+        let config = Config {
+            channels: 16,
+            anc: false,
+            vbi: false,
+            ..Config::default()
+        };
+        let mut buffers = [
+            vec![0; layout.stride as usize * layout.height as usize],
+            vec![0; 262144],
+            vec![0; 262144],
+            vec![0; 128],
+            vec![0; 48960],
+        ];
+        let [a, b, c, d, e] = &mut buffers;
+        let lengths = Generator::new(config.clone())
+            .fill([a, b, c, d, e], layout, mode)
+            .unwrap();
+        if skew {
+            for i in 0..lengths[1] as usize / 64 {
+                for ch in 14..16 {
+                    put32(
+                        &mut buffers[1],
+                        (i * 16 + ch) * 4,
+                        (tone(i as u64 + 3, ch) * 256) as u32,
+                    );
+                }
+            }
+        }
+        if corrupt {
+            // Outside the initial phase-fitting window: a later glitch must
+            // not be explained away as a constant channel offset.
+            put32(&mut buffers[1], (500 * 16 + 15) * 4, 0x40000000);
+        }
+        let mut stats = Stats::default();
+        stats
+            .frame(
+                std::array::from_fn(|i| &buffers[i][..lengths[i] as usize]),
+                layout,
+                mode,
+                0,
+                0,
+                1,
+                Some(&config),
+            )
+            .unwrap();
+        stats.finish(Some(&config));
+        stats
+    }
+    assert_eq!(run(false, false).failure_count, 0);
+    let skew = run(true, false);
+    assert!(skew.failure_count > 0);
+    assert!(skew.errors.iter().any(|e| e.contains("15:+3, 16:+3")));
+    let corrupt = run(true, true);
+    assert!(corrupt.failure_count > 0);
+    assert!(!corrupt.errors.iter().any(|e| e.contains("phase offsets")));
+}
+
+#[test]
 fn anc_rejects_truncation_and_parity() {
     let (_, m) = geometry("SDUY");
     let ps = fixtures(7, m);
