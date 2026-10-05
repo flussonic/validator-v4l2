@@ -137,7 +137,7 @@ fn video_picture(
     let h = l.height as usize;
     let stride = l.stride as usize;
     let row_bytes = if f == "SD10" {
-        w.div_ceil(6) * 16
+        (w * 2).div_ceil(3) * 4
     } else {
         w * if ["SD16", "SDXU", "SDAR"].contains(&f.as_str()) {
             4
@@ -183,7 +183,8 @@ fn video_picture(
                     p[0][1], p[0][0], p[0][2], p[1][0], p[2][1], p[2][0], p[2][2], p[3][0],
                     p[4][1], p[4][0], p[4][2], p[5][0],
                 ];
-                for n in 0..4 {
+                let words = ((w - x).min(6) * 2).div_ceil(3);
+                for n in 0..words {
                     put32(
                         dst,
                         x / 6 * 16 + n * 4,

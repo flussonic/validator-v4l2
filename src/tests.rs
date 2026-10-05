@@ -49,6 +49,35 @@ fn video_formats_preserve_marker_and_bars() {
     }
 }
 #[test]
+fn v210_partial_groups_fit_the_advertised_row_stride() {
+    for width in [1280, 1282] {
+        let packed = Layout {
+            width,
+            height: 16,
+            fourcc: fourcc("SD10").unwrap(),
+            stride: (width * 2).div_ceil(3) * 4,
+            ..Layout::default()
+        };
+        let reference = Layout {
+            fourcc: fourcc("SDUY").unwrap(),
+            stride: width * 2,
+            ..packed
+        };
+        let mut actual = vec![0; (packed.stride * packed.height) as usize];
+        let mut expected = vec![0; (reference.stride * reference.height) as usize];
+        video(&mut expected, reference, 17).unwrap();
+        video(&mut actual, packed, 17).unwrap();
+        for y in 0..packed.height {
+            for x in 0..width {
+                assert_eq!(
+                    luma(&actual, packed, x, y),
+                    luma(&expected, reference, x, y)
+                );
+            }
+        }
+    }
+}
+#[test]
 fn fractional_audio_cadence_has_no_drift() {
     let (l, m) = geometry("SDUY");
     let mut g = Generator::new(Config::default());
