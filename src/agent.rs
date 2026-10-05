@@ -248,6 +248,7 @@ fn checked_args(command: &str, args: &[String]) -> Result<Option<String>> {
             "--no-vbi",
             "--nonpcm",
             "--eac3",
+            "--scte104-fragments",
             "--windowed-audio",
             "--no-meta",
             "--wire-plan",
@@ -459,6 +460,9 @@ fn read_message(stream: &mut TcpStream, max: usize) -> Result<Message> {
     let mut bytes = vec![];
     let end = loop {
         if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            if i + 4 > 16384 {
+                return Err("header limit".into());
+            }
             break i + 4;
         }
         if bytes.len() > 16384 {
