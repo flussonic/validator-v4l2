@@ -3,7 +3,8 @@ PREFIX ?= /usr/local
 .PHONY: all test check install clean
 all:
 	$(CARGO) build --release --offline
-	cp target/release/validator-v4l2 validator-v4l2
+	cp target/release/validator-v4l2 validator-v4l2.tmp
+	mv -f validator-v4l2.tmp validator-v4l2
 test:
 	$(CARGO) test --offline
 	@if [ "$$(uname -s)" = Linux ]; then \
