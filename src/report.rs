@@ -1,26 +1,11 @@
 // SPDX-License-Identifier: MIT
+pub use crate::json::quote;
 use crate::{validate::Stats, Result};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
 };
-pub fn quote(s: &str) -> String {
-    let mut o = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if c < ' ' => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
-}
 pub fn emit(
     path: Option<&str>,
     status: &str,
@@ -29,7 +14,8 @@ pub fn emit(
     stats: Option<&Stats>,
 ) -> Result<()> {
     let mut s = format!(
-        "{{\"status\":{},\"case\":{},\"detail\":{}",
+        "{{\"run_id\":{},\"status\":{},\"case\":{},\"detail\":{}",
+        quote(crate::run_id()),
         quote(status),
         quote(case),
         quote(detail)

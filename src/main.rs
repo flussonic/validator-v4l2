@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
+mod agent;
 mod artifacts;
 mod device;
 mod eac3;
+mod json;
 mod pattern;
 mod report;
 mod sapsan;
@@ -18,9 +20,26 @@ use std::{
     time::{Duration, Instant},
 };
 use validate::Stats;
+fn run_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("VALIDATOR_RUN_ID").unwrap_or_else(|_| {
+            format!(
+                "run-{:x}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                std::process::id()
+            )
+        })
+    })
+}
 pub type Result<T> = std::result::Result<T, String>;
 const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and endurance validator
 
+  validator-v4l2 serve --listen 0.0.0.0:8787
+  validator-v4l2 list --agent-url http://server:8787
   validator-v4l2 list
   validator-v4l2 quick [--pair /dev/video4=/dev/video1] [--report result.jsonl]
   validator-v4l2 transmit --device /dev/video4 --mode 1080p25 [options]
@@ -54,7 +73,12 @@ Options:
   --exhaustive         all timing/format combinations in quick/plan
   --cycles N          bound soak by matrix cycles as well as duration
   --seed N            reproducible randomized soak order (default 1)
-  --tx-host HOST --rx-host HOST  SSH endpoints (omitted = local Linux)
+  --tx-url URL --rx-url URL  HTTP agent endpoints (omitted = local Linux)
+  --agent-url URL      HTTP agent for inventory
+  --listen ADDRESS    HTTP agent bind address (default 127.0.0.1:8787)
+  --token TOKEN       optional HTTP agent bearer token
+  --agent-token TOKEN optional coordinator bearer token
+  --tx-host HOST --rx-host HOST  legacy SSH endpoints
   --remote-bin PATH    remote executable (default validator-v4l2)
   --report PATH        append machine-readable JSON Lines
   --html PATH          also save a standalone browsable report (requires --report)
@@ -77,7 +101,10 @@ struct Options {
 }
 impl Options {
     fn parse() -> Result<Self> {
-        let mut it = std::env::args().skip(1);
+        Self::from_args(std::env::args().skip(1))
+    }
+    fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self> {
+        let mut it = args.into_iter();
         let cmd = it.next().unwrap_or("quick".into());
         let mut values = BTreeMap::new();
         let mut switches = vec![];
@@ -114,6 +141,12 @@ impl Options {
                 "--duration",
                 "--cycles",
                 "--seed",
+                "--tx-url",
+                "--rx-url",
+                "--agent-url",
+                "--listen",
+                "--token",
+                "--agent-token",
                 "--tx-host",
                 "--rx-host",
                 "--remote-bin",
@@ -140,6 +173,11 @@ impl Options {
             switches,
         };
         o.config()?;
+        for (url, host) in [("--tx-url", "--tx-host"), ("--rx-url", "--rx-host")] {
+            if o.values.contains_key(url) && o.values.contains_key(host) {
+                return Err(format!("{url} and {host} are mutually exclusive"));
+            }
+        }
         if !["mmap", "userptr", "dmabuf"].contains(&o.get("--memory", "mmap")) {
             return Err("memory must be mmap, userptr or dmabuf".into());
         }
@@ -265,6 +303,32 @@ fn attrs(p: &str) -> BTreeMap<String, String> {
         .collect()
 }
 fn inventory(o: &Options) -> Result<bool> {
+    if let Some(url) = o.values.get("--agent-url") {
+        let endpoint = agent::Endpoint::new(
+            url,
+            o.values
+                .get("--agent-token")
+                .cloned()
+                .or_else(|| std::env::var("VALIDATOR_HTTP_TOKEN").ok()),
+        )?;
+        let output = agent::inspect(endpoint, "list", &[])?;
+        let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        print!("{text}");
+        if let Some(path) = o.report() {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| e.to_string())?
+                .write_all(text.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        if !output.success {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+        return Ok(output.success);
+    }
     let mut ok = true;
     for p in nodes(o)? {
         let result = (|| -> Result<(&str, String)> {
@@ -706,6 +770,122 @@ fn command(o: &Options, host_key: &str, args: &[String]) -> Result<Command> {
         Ok(c)
     }
 }
+enum Task {
+    Local {
+        child: Option<std::process::Child>,
+        command: String,
+    },
+    Http(agent::HttpJob),
+}
+impl Task {
+    fn start(o: &Options, host: &str, args: &[String]) -> Result<Self> {
+        if let Some(endpoint) = agent::endpoint(o, host)? {
+            return agent::HttpJob::start(endpoint, args).map(Self::Http);
+        }
+        let child = command(o, host, args)?
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(Self::Local {
+            child: Some(child),
+            command: args[0].clone(),
+        })
+    }
+    fn heartbeat(&self) -> Result<()> {
+        if let Self::Http(job) = self {
+            job.heartbeat()
+        } else {
+            Ok(())
+        }
+    }
+    fn poll(&mut self) -> Result<Option<agent::Output>> {
+        match self {
+            Self::Http(job) => job.poll(),
+            Self::Local { child, .. } => {
+                let ready = child
+                    .as_mut()
+                    .ok_or("task already collected")?
+                    .try_wait()
+                    .map_err(|e| e.to_string())?
+                    .is_some();
+                if !ready {
+                    return Ok(None);
+                }
+                let output = child
+                    .take()
+                    .ok_or("task missing")?
+                    .wait_with_output()
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(agent::Output {
+                    success: output.status.success(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }))
+            }
+        }
+    }
+    fn stop(&mut self) {
+        match self {
+            Self::Http(job) => {
+                let _ = job.stop();
+            }
+            Self::Local {
+                child: Some(child),
+                command,
+            } => agent::terminate(child, command),
+            _ => {}
+        }
+    }
+}
+impl Drop for Task {
+    fn drop(&mut self) {
+        self.stop();
+        if let Self::Local {
+            child: Some(child), ..
+        } = self
+        {
+            let start = Instant::now();
+            while matches!(child.try_wait(), Ok(None)) && start.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+fn endpoint_output(o: &Options, host: &str, args: &[String]) -> Result<agent::Output> {
+    if let Some(endpoint) = agent::endpoint(o, host)? {
+        if args[0] == "plan" || args[0] == "list" {
+            return agent::inspect(endpoint, &args[0], &args[1..]);
+        }
+        let mut task = Task::start(o, host, args)?;
+        let mut heartbeat = Instant::now();
+        loop {
+            if stop_requested() {
+                return Err("remote task interrupted".into());
+            }
+            if heartbeat.elapsed() >= Duration::from_secs(1) {
+                task.heartbeat()?;
+                heartbeat = Instant::now();
+            }
+            if let Some(output) = task.poll()? {
+                return Ok(output);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    } else {
+        let output = command(o, host, args)?
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(agent::Output {
+            success: output.status.success(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -744,12 +924,8 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         duration.to_string(),
         "--stop-on-stdin".into(),
     ]);
-    let mut child = command(o, "--tx-host", &ta)?
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    let mut transmitter = Task::start(o, "--tx-host", &ta)?;
+    let deadline = Instant::now() + Duration::from_secs(duration + 15);
     std::thread::sleep(Duration::from_secs(1));
     let mut ra = vec![
         "receive".into(),
@@ -768,20 +944,40 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         ra.push("--windowed-audio".into());
     }
     // Capture enumeration indices are vendor-specific: the mode name is resolved independently.
-    let result = command(o, "--rx-host", &ra)?.output();
-    if let Some(mut input) = child.stdin.take() {
-        use std::io::Write;
-        let _ = input.write_all(b"stop\n");
-    }
-    let tx_result = child.wait_with_output().map_err(|e| e.to_string())?;
-    let rx_result = result.map_err(|e| e.to_string())?;
-    let ok = tx_result.status.success() && rx_result.status.success();
+    let mut receiver = Task::start(o, "--rx-host", &ra)?;
+    let mut heartbeat = Instant::now();
+    let received = loop {
+        if stop_requested() || Instant::now() >= deadline {
+            return Err("paired test interrupted or exceeded its deadline".into());
+        }
+        if heartbeat.elapsed() >= Duration::from_secs(1) {
+            transmitter.heartbeat()?;
+            receiver.heartbeat()?;
+            heartbeat = Instant::now();
+        }
+        if let Some(result) = receiver.poll()? {
+            break result;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    transmitter.stop();
+    let stopped = Instant::now();
+    let transmitted = loop {
+        if let Some(result) = transmitter.poll()? {
+            break result;
+        }
+        if stopped.elapsed() > Duration::from_secs(5) {
+            return Err("transmitter did not stop".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let ok = transmitted.success && received.success;
     let detail = format!(
         "tx: {} {} rx: {} {}",
-        String::from_utf8_lossy(&tx_result.stdout),
-        String::from_utf8_lossy(&tx_result.stderr),
-        String::from_utf8_lossy(&rx_result.stdout),
-        String::from_utf8_lossy(&rx_result.stderr)
+        String::from_utf8_lossy(&transmitted.stdout),
+        String::from_utf8_lossy(&transmitted.stderr),
+        String::from_utf8_lossy(&received.stdout),
+        String::from_utf8_lossy(&received.stderr)
     );
     emit(
         o.report(),
@@ -915,7 +1111,7 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
     } else {
         o.required("--device")?
     };
-    let mut cases = if o.values.contains_key("--tx-host") {
+    let mut cases = if o.values.contains_key("--tx-host") || o.values.contains_key("--tx-url") {
         let mut args = vec![
             "plan".into(),
             "--wire-plan".into(),
@@ -951,10 +1147,8 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
                 args.push(key.into());
             }
         }
-        let result = command(o, "--tx-host", &args)?
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !result.status.success() {
+        let result = endpoint_output(o, "--tx-host", &args)?;
+        if !result.success {
             return Err(format!(
                 "remote plan: {}",
                 String::from_utf8_lossy(&result.stderr)
@@ -997,10 +1191,8 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
                     o.number("--frames", 50)?.to_string(),
                 ];
                 args.extend(case_args(case));
-                let r = command(o, "--tx-host", &args)?
-                    .output()
-                    .map_err(|e| e.to_string())?;
-                let pass = r.status.success();
+                let r = endpoint_output(o, "--tx-host", &args)?;
+                let pass = r.success;
                 emit(
                     o.report(),
                     if pass { "OBSERVED" } else { "FAIL" },
@@ -1131,6 +1323,7 @@ fn run(o: &Options) -> Result<bool> {
             print!("{HELP}");
             Ok(true)
         }
+        "serve" => agent::serve(o),
         "list" => inventory(o),
         "quick" => quick(o),
         "receive" => stream(o, false),

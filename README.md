@@ -5,6 +5,14 @@ Flussonic's DeckLink, AJA, DekTec, Stream Labs, AVMatrix and Magewell drivers.
 MIT application, bundled original `include/sdi_av.h` with its syscall exception.
 No vendor SDK, Rust crate downloads or FFmpeg are needed.
 
+`--scte104-fragments` selects a 287-byte multi-operation SCTE-104 message:
+a splice request plus 63 avail identifiers, carried in two ST 2010 ANC
+packets on consecutive VANC lines. Use the option on `transmit`, expected
+`receive` and `inspect-anc`; omitted means the existing single-packet
+fixture. Inspection compares the complete per-type payload multiset and
+rejects missing, duplicated or adjacent-picture fragments. This checks
+raw transport, not SCTE-104 assembly by a downstream media server.
+
 Linux prerequisites: Rust 1.75+, Cargo, make, a C compiler, ar and Linux UAPI
 headers. SSH is needed only for remote endpoints. Building and testing:
 
@@ -56,13 +64,24 @@ checks the whole-run sample count within 0.1% plus a tenth of a frame,
 allows per-frame count jitter and still checks every tone sample and continuity.
 The default checks each frame's sample count within one sample.
 
-For two servers, install the same executable on both. The coordinator can
-run on either server or a workstation; SSH uses the configured keys:
+For distributed testing, start the built-in HTTP agent on each server:
 
 ```sh
-./validator-v4l2 loop --tx-host root@sender --rx-host root@receiver --remote-bin /usr/local/bin/validator-v4l2 --pair /dev/video4=/dev/video1 --mode 1080p25
-./validator-v4l2 quick --tx-host root@sender --rx-host root@receiver --pair /dev/video4=/dev/video1 --report remote.jsonl
+./validator-v4l2 serve --listen 0.0.0.0:8787
 ```
+
+Run one coordinator on a workstation or either server:
+
+```sh
+./validator-v4l2 quick --tx-url http://sender:8787 --rx-url http://receiver:8787 --pair /dev/video4=/dev/video1 --report remote.jsonl --html remote.html
+./validator-v4l2 soak --tx-url http://sender:8787 --rx-url http://receiver:8787 --pair /dev/video4=/dev/video1 --duration 86400 --report soak.jsonl --html soak.html
+```
+
+The coordinator discovers modes, starts both workers, renews their leases,
+collects results and stops transmission. Agents stop orphaned workers when a
+lease expires. No SSH commands are used in HTTP mode. See the
+[agent protocol](docs/http-agent.md) for inventory, job APIs and authentication.
+The old SSH options remain available for existing scripts.
 
 Reports are append-only JSON Lines. Exit 0 means no attempted case failed,
 1 means validation failure, 2 means invalid arguments or an operational error.
