@@ -45,6 +45,7 @@ fn pcm_phase_offsets(
 pub struct Stats {
     pub windowed_audio: bool,
     pub frames: u64,
+    pub crc_errors: u64,
     pub gaps: u64,
     pub errors: Vec<String>,
     pub failure_count: u64,
@@ -129,7 +130,9 @@ impl Stats {
         if mf & 48 == 48 {
             self.fail("HLG and PQ both set");
         }
-        if get32(meta, 12)? != 0 {
+        let crc = get32(meta, 12)?;
+        self.crc_errors = self.crc_errors.saturating_add(u64::from(crc));
+        if crc != 0 {
             self.fail("frame CRC errors");
         }
         let hw = u64::from_le_bytes(meta[16..24].try_into().unwrap());

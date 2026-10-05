@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDI validator report</title><style>
+body{font:15px system-ui,sans-serif;margin:28px;color:#17212b;background:#f6f8fa}h1{font-size:26px}#summary{display:flex;gap:12px;flex-wrap:wrap;margin:20px 0}.count{background:white;border:1px solid #d5dce3;border-radius:6px;padding:12px 18px}.pass{color:#176a37}.fail{color:#ad1824}.skip,.observed{color:#775600}input,select{padding:8px;border:1px solid #bac5cf;border-radius:4px;margin-right:8px}table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #d5dce3;vertical-align:top}th{background:#e8edf2}td:first-child{max-width:520px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}details{margin-top:8px}footer{font-size:13px;color:#52606d;margin-top:22px}#log{display:none}
+</style></head><body>
+<h1>SDI validator report</h1><p>Video, audio, ANC, HDR and driver stability</p>
+<div id="summary"></div><p id="coverage"></p>
+<label>Result <select id="status"><option value="">All</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
+<label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label>
+<table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio channels</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table>
+<footer>PASS means validation completed. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
+<textarea id="log" aria-hidden="true">{{LOG}}</textarea>
+<script>{{SCRIPT}}</script></body></html>

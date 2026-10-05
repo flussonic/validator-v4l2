@@ -27,6 +27,7 @@ const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and enduranc
   validator-v4l2 receive --device /dev/video0 [--expect] [options]
   validator-v4l2 loop --pair /dev/video4=/dev/video1 [options]
   validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 [options]
+  validator-v4l2 report --file result.jsonl --html report.html
   validator-v4l2 inspect-anc --dump DIR --mode 1080p25 [--anc-types 41/07,60/60,41/05] --expect
   validator-v4l2 inspect-ts --file CAPTURE.ts [--expect]
   validator-v4l2 inspect-ts --url http://HOST/streaming/mpegts/STREAM --duration 5 --expect
@@ -56,6 +57,7 @@ Options:
   --tx-host HOST --rx-host HOST  SSH endpoints (omitted = local Linux)
   --remote-bin PATH    remote executable (default validator-v4l2)
   --report PATH        append machine-readable JSON Lines
+  --html PATH          also save a standalone browsable report (requires --report)
   --dump DIR           dump all five planes, or inspect an existing capture
   --anc-types DID/SDID,...  hex pairs to inspect (payload coverage, not full ABI)
   --file PATH          generated MPEG-TS capture for inspect-ts
@@ -116,6 +118,7 @@ impl Options {
                 "--rx-host",
                 "--remote-bin",
                 "--report",
+                "--html",
                 "--dump",
                 "--file",
                 "--url",
@@ -1145,6 +1148,11 @@ fn run(o: &Options) -> Result<bool> {
         "software" => software(o),
         "inspect-anc" => artifacts::inspect_anc(o),
         "inspect-ts" => artifacts::inspect_ts(o),
+        "report" => {
+            o.required("--file")?;
+            o.required("--html")?;
+            Ok(true)
+        }
         "plan" => {
             let (tx, _) = pair(o)?;
             for c in matrix(o, tx)? {
@@ -1180,7 +1188,22 @@ fn main() {
                 STDIN_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
             });
         }
-        run(&o)
+        if o.values.contains_key("--html") && o.cmd != "report" {
+            o.required("--report")?;
+        }
+        let result = run(&o);
+        if let Some(html) = o.values.get("--html") {
+            let source = if o.cmd == "report" {
+                o.required("--file")?
+            } else {
+                o.required("--report")?
+            };
+            if let Err(error) = &result {
+                emit(Some(source), "FAIL", &o.cmd, error, None)?;
+            }
+            report::write_html(source, html)?;
+        }
+        result
     });
     match result {
         Ok(true) => {}

@@ -28,11 +28,11 @@ source is OBSERVED, not an end-to-end PASS. Output nodes need an explicit pair.
 ./validator-v4l2 loop --pair /dev/video4=/dev/video1 --mode 1080p25 --channels 2 --eac3
 # Quick coverage of advertised modes/formats up to UHD/DCI 4K, plus features.
 ./validator-v4l2 plan --pair /dev/video4=/dev/video1
-./validator-v4l2 quick --pair /dev/video4=/dev/video1 --report matrix.jsonl
+./validator-v4l2 quick --pair /dev/video4=/dev/video1 --report matrix.jsonl --html matrix.html
 # Every timing/format combination.
 ./validator-v4l2 quick --pair /dev/video4=/dev/video1 --exhaustive --report full.jsonl
 # Repeat the matrix in a reproducible random order for a day.
-./validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 --seed 1 --report soak.jsonl
+./validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 --seed 1 --report soak.jsonl --html soak.html
 # Output-only endurance on one server without a connected receiver.
 ./validator-v4l2 soak --device /dev/video4 --duration 3600 --report output.jsonl
 # Test the software generator/validator without a board.
@@ -90,3 +90,18 @@ splice_insert sections fitting one TS packet. `--expect` additionally
 requires consecutive generated event IDs. It does not certify PMT or
 splice timing, arbitrary SCTE messages or spanning sections. URL capture
 uses plain HTTP; no external capture utility or vendor SDK is required.
+
+## Saved reports
+
+`--report result.jsonl --html result.html` saves both machine-readable data
+and an offline HTML report on the coordinating server. It works with local
+pairs and `--tx-host` / `--rx-host` remote pairs. For an existing log:
+
+```sh
+./validator-v4l2 report --file result.jsonl --html result.html
+```
+
+The report filters by result and searches devices, modes and errors. It shows
+receiver frames, gaps, reported CRC errors, detected audio channels and ANC;
+transmitter failures remain failures even when the receiver passes. SKIP and
+OBSERVED never count as PASS. No browser packages or network access are needed.

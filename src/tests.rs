@@ -595,3 +595,50 @@ fn scte104_fixture_uses_vanc_y_for_hd() {
         "ST 2010 section 6 requires the HD Y stream"
     );
 }
+
+#[test]
+fn metadata_crc_counts_accumulate_without_hiding_frame_failures() {
+    let (layout, mode) = geometry("SDUY");
+    let mut generator = Generator::new(Config::default());
+    let mut stats = Stats::default();
+    let mut buffers = [
+        vec![0; (layout.stride * layout.height) as usize],
+        vec![0; 262144],
+        vec![0; 262144],
+        vec![0; 128],
+        vec![0; 48960],
+    ];
+    for (sequence, crc) in [2u32, 0, 3].into_iter().enumerate() {
+        let [video, audio, anc, meta, vbi] = &mut buffers;
+        let used = generator
+            .fill([video, audio, anc, meta, vbi], layout, mode)
+            .unwrap();
+        buffers[3][12..16].copy_from_slice(&crc.to_le_bytes());
+        stats
+            .frame(
+                [
+                    &buffers[0][..usize::try_from(used[0]).unwrap()],
+                    &buffers[1][..usize::try_from(used[1]).unwrap()],
+                    &buffers[2][..usize::try_from(used[2]).unwrap()],
+                    &buffers[3][..usize::try_from(used[3]).unwrap()],
+                    &buffers[4][..usize::try_from(used[4]).unwrap()],
+                ],
+                layout,
+                mode,
+                sequence as u32,
+                0,
+                sequence as u64 + 1,
+                None,
+            )
+            .unwrap();
+    }
+    assert_eq!(stats.crc_errors, 5);
+    assert_eq!(
+        stats
+            .errors
+            .iter()
+            .filter(|e| e.as_str() == "frame CRC errors")
+            .count(),
+        2
+    );
+}
