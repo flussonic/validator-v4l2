@@ -40,6 +40,7 @@ pub struct Config {
     pub nonpcm: bool,
     pub eac3: bool,
     pub anc: bool,
+    pub scte104_fragments: bool,
     pub vbi: bool,
 }
 impl Default for Config {
@@ -53,6 +54,7 @@ impl Default for Config {
             nonpcm: false,
             eac3: false,
             anc: true,
+            scte104_fragments: false,
             vbi: true,
         }
     }
@@ -521,6 +523,45 @@ pub fn fixtures(frame: u64, mode: Mode) -> Vec<Packet> {
         },
     ]
 }
+
+/// A multi-operation message exceeding ST 291's 254-byte message capacity.
+/// Keep all fragments in one vertical interval (ST 2010 sections 5.2/5.4).
+pub fn fixture_packets(frame: u64, mode: Mode, fragments: bool) -> Vec<Packet> {
+    let mut ps = fixtures(frame, mode);
+    if !fragments {
+        return ps;
+    }
+    let position = ps
+        .iter()
+        .position(|p| (p.did, p.sdid) == (0x41, 7))
+        .unwrap();
+    let mut message = ps[position].data[1..].to_vec();
+    message[11] = 2; // splice_request_data plus insert_avail_descriptor_request_data
+    let mut avails = vec![63];
+    for i in 0..63_u32 {
+        avails.extend_from_slice(&(frame as u32).wrapping_add(i).to_be_bytes());
+    }
+    message.extend_from_slice(&[0x01, 0x0a]);
+    message.extend_from_slice(&(avails.len() as u16).to_be_bytes());
+    message.extend_from_slice(&avails);
+    let size = (message.len() as u16).to_be_bytes();
+    message[2..4].copy_from_slice(&size);
+    let parts: Vec<_> = message
+        .chunks(254)
+        .enumerate()
+        .map(|(i, part)| Packet {
+            line: 16 + i as u16,
+            did: 0x41,
+            sdid: 7,
+            flags: 0,
+            data: std::iter::once(if i == 0 { 0x0c } else { 0x0a })
+                .chain(part.iter().copied())
+                .collect(),
+        })
+        .collect();
+    ps.splice(position..position + 1, parts);
+    ps
+}
 pub fn anc(b: &mut [u8], ps: &[Packet]) -> Result<usize> {
     let mut off = 0;
     for p in ps {
@@ -608,7 +649,10 @@ impl Generator {
         self.remainder %= m.num;
         audio(p[1], samples, self.phase, &self.config)?;
         let al = if self.config.anc {
-            anc(p[2], &fixtures(self.frame, m))?
+            anc(
+                p[2],
+                &fixture_packets(self.frame, m, self.config.scte104_fragments),
+            )?
         } else {
             0
         };

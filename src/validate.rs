@@ -253,7 +253,7 @@ impl Stats {
                 self.fail("SMPTE 337M channels not detected");
             }
             if c.anc {
-                for wanted in fixtures(frame, m) {
+                for wanted in fixture_packets(frame, m, c.scte104_fragments) {
                     if !packet_list.iter().any(|p| {
                         p.did == wanted.did && p.sdid == wanted.sdid && p.data == wanted.data
                     }) {

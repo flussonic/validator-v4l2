@@ -597,6 +597,36 @@ fn scte104_fixture_uses_vanc_y_for_hd() {
 }
 
 #[test]
+fn fragmented_scte104_reassembles_to_one_multi_operation_message() {
+    let mode = Mode {
+        num: 25,
+        den: 1,
+        ..Mode::default()
+    };
+    let packets = fixture_packets(123, mode, true);
+    let parts: Vec<_> = packets
+        .iter()
+        .filter(|p| (p.did, p.sdid) == (0x41, 7))
+        .collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].data[0], 0x0c);
+    assert_eq!(parts[1].data[0], 0x0a);
+    assert!(parts.iter().all(|p| p.flags == 0 && p.data.len() <= 255));
+    let message: Vec<_> = parts
+        .iter()
+        .flat_map(|p| p.data[1..].iter().copied())
+        .collect();
+    assert_eq!(message.len(), 287);
+    assert_eq!(
+        u16::from_be_bytes([message[2], message[3]]) as usize,
+        message.len()
+    );
+    assert_eq!(message[11], 2);
+    assert_eq!(&message[17..21], &123_u32.to_be_bytes());
+    assert_eq!(&message[30..34], &[1, 10, 0, 253]);
+}
+
+#[test]
 fn metadata_crc_counts_accumulate_without_hiding_frame_failures() {
     let (layout, mode) = geometry("SDUY");
     let mut generator = Generator::new(Config::default());

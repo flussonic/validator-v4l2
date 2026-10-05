@@ -120,6 +120,7 @@ impl Options {
                 "--wire-plan",
                 "--stop-on-stdin",
                 "--exhaustive",
+                "--scte104-fragments",
             ]
             .contains(&k.as_str())
             {
@@ -234,6 +235,7 @@ impl Options {
             nonpcm: self.has("--nonpcm") || self.has("--eac3"),
             eac3: self.has("--eac3"),
             anc: !self.has("--no-anc"),
+            scte104_fragments: self.has("--scte104-fragments"),
             vbi: !self.has("--no-vbi"),
         })
     }
@@ -734,6 +736,7 @@ fn case_args(case: &Case) -> Vec<String> {
         (!c.vbi, "--no-vbi"),
         (c.nonpcm, "--nonpcm"),
         (c.eac3, "--eac3"),
+        (c.scte104_fragments, "--scte104-fragments"),
         (c.no_meta, "--no-meta"),
     ] {
         if on {
@@ -1080,6 +1083,7 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
             nonpcm: n(7)? != 0,
             eac3: n(11)? != 0,
             anc: n(8)? != 0,
+            scte104_fragments: false,
             vbi: n(9)? != 0,
         };
         if !(1..=16).contains(&c.channels)

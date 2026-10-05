@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use super::*;
 use crate::{
-    pattern::{anc, video},
+    pattern::{anc, put32, video},
     Options,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,8 +61,8 @@ fn inspection_detects_the_one_frame_anc_association_bug() {
     ] {
         meta[off..off + 4].copy_from_slice(&value.to_le_bytes());
     }
-    fs::write(dir.join("video0-0-3.bin"), meta).unwrap();
-    let options = Options {
+    fs::write(dir.join("video0-0-3.bin"), &meta).unwrap();
+    let mut options = Options {
         cmd: "inspect-anc".into(),
         values: [
             ("--dump".into(), dir.to_str().unwrap().into()),
@@ -71,8 +71,18 @@ fn inspection_detects_the_one_frame_anc_association_bug() {
         .into(),
         switches: vec!["--expect".into()],
     };
-    for (anc_frame, expected) in [(31, true), (32, false)] {
-        let ps: Vec<_> = fixtures(anc_frame, mode)
+    for (fragments, anc_frame, missing, expected) in [
+        (false, 31, false, true),
+        (false, 32, false, false),
+        (true, 31, false, true),
+        (true, 32, false, false),
+        (true, 31, true, false),
+    ] {
+        options.switches.retain(|s| s != "--scte104-fragments");
+        if fragments {
+            options.switches.push("--scte104-fragments".into());
+        }
+        let mut ps: Vec<_> = fixture_packets(anc_frame, mode, fragments)
             .into_iter()
             .filter(|p| [(0x60, 0x60), (0x41, 5), (0x41, 7)].contains(&(p.did, p.sdid)))
             .map(|mut p| {
@@ -80,6 +90,15 @@ fn inspection_detects_the_one_frame_anc_association_bug() {
                 p
             })
             .collect();
+        if missing {
+            let last = ps
+                .iter()
+                .rposition(|p| (p.did, p.sdid) == (0x41, 7))
+                .unwrap();
+            ps.remove(last);
+        }
+        put32(&mut meta, 132, ps.len() as u32);
+        fs::write(dir.join("video0-0-3.bin"), &meta).unwrap();
         let mut data = vec![0; 1024];
         let size = anc(&mut data, &ps).unwrap();
         fs::write(dir.join("video0-0-2.bin"), &data[..size]).unwrap();

@@ -3,7 +3,7 @@
 //! These commands have explicit coverage; they do not replace common ABI checks.
 use crate::{
     device::{Layout, Mode},
-    pattern::{fixtures, fourcc, get32, marker, packets},
+    pattern::{fixture_packets, fourcc, get32, marker, packets},
     report,
     validate::Stats,
     Options, Result,
@@ -139,17 +139,28 @@ pub fn inspect_anc(o: &Options) -> Result<bool> {
                 continue;
             }
         };
-        let wanted = fixtures(frame, mode);
-        for p in &wanted {
-            let key = (p.did, p.sdid);
+        let wanted = fixture_packets(frame, mode, o.has("--scte104-fragments"));
+        let keys: BTreeSet<_> = wanted.iter().map(|p| (p.did, p.sdid)).collect();
+        for key in keys {
             if selected.as_ref().is_some_and(|s| !s.contains(&key)) {
                 continue;
             }
-            let found: Vec<_> = ps.iter().filter(|v| (v.did, v.sdid) == key).collect();
-            if found.is_empty() || found.iter().any(|v| v.data != p.data) {
+            let mut found: Vec<_> = ps
+                .iter()
+                .filter(|v| (v.did, v.sdid) == key)
+                .map(|p| p.data.as_slice())
+                .collect();
+            let mut expected: Vec<_> = wanted
+                .iter()
+                .filter(|v| (v.did, v.sdid) == key)
+                .map(|p| p.data.as_slice())
+                .collect();
+            found.sort();
+            expected.sort();
+            if found != expected {
                 stats.fail(format!(
                     "picture {frame}: missing/corrupt ANC {:02x}/{:02x}",
-                    p.did, p.sdid
+                    key.0, key.1
                 ));
             }
         }
