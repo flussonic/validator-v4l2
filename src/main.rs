@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+mod artifacts;
 mod device;
 mod eac3;
 mod pattern;
@@ -26,6 +27,9 @@ const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and enduranc
   validator-v4l2 receive --device /dev/video0 [--expect] [options]
   validator-v4l2 loop --pair /dev/video4=/dev/video1 [options]
   validator-v4l2 soak --pair /dev/video4=/dev/video1 --duration 86400 [options]
+  validator-v4l2 inspect-anc --dump DIR --mode 1080p25 [--anc-types 41/07,60/60,41/05] --expect
+  validator-v4l2 inspect-ts --file CAPTURE.ts [--expect]
+  validator-v4l2 inspect-ts --url http://HOST/streaming/mpegts/STREAM --duration 5 --expect
   validator-v4l2 software [options]
   validator-v4l2 plan --pair /dev/video4=/dev/video1
 
@@ -52,7 +56,10 @@ Options:
   --tx-host HOST --rx-host HOST  SSH endpoints (omitted = local Linux)
   --remote-bin PATH    remote executable (default validator-v4l2)
   --report PATH        append machine-readable JSON Lines
-  --dump DIR           dump all five planes of each received frame
+  --dump DIR           dump all five planes, or inspect an existing capture
+  --anc-types DID/SDID,...  hex pairs to inspect (payload coverage, not full ABI)
+  --file PATH          generated MPEG-TS capture for inspect-ts
+  --url HTTP_URL       capture MPEG-TS directly for inspect-ts
   --device PATH        node for receive/transmit; quick can select one node
 
 quick without a pair inventories every node and captures currently locked inputs.
@@ -110,6 +117,9 @@ impl Options {
                 "--remote-bin",
                 "--report",
                 "--dump",
+                "--file",
+                "--url",
+                "--anc-types",
             ]
             .contains(&k.as_str())
             {
@@ -1121,6 +1131,8 @@ fn run(o: &Options) -> Result<bool> {
         }
         "soak" => run_matrix(o, true),
         "software" => software(o),
+        "inspect-anc" => artifacts::inspect_anc(o),
+        "inspect-ts" => artifacts::inspect_ts(o),
         "plan" => {
             let (tx, _) = pair(o)?;
             for c in matrix(o, tx)? {

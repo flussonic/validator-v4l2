@@ -25,3 +25,9 @@ It checks transport integrity without implementing an E-AC-3 decoder.
 
 References: [SMPTE ST 337](https://pub.smpte.org/latest/st337/st0337-2015.pdf)
 and [SMPTE ST 340](https://pub.smpte.org/doc/st340/20080604-pub/st0340-2008.pdf).
+
+
+`scte35-generated.ts` is one TS packet captured from mcaster's output of
+the validator's synthetic SCTE-104 splice fixture (1080p25, event 3617).
+It contains signalling only. Used to check a real generated section CRC
+and corruption detection; no third-party programme or vendor SDK data.

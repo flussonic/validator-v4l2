@@ -68,3 +68,25 @@ Reports are append-only JSON Lines. Exit 0 means no attempted case failed,
 1 means validation failure, 2 means invalid arguments or an operational error.
 A report with SKIP/OBSERVED entries does not certify all functions. Actual
 coverage and limitations are documented in [coverage](docs/coverage.md).
+
+
+Capture and test sources belong to this validator, not individual driver
+repositories. ANC replay and generated SCTE forwarding checks:
+
+```
+validator-v4l2 receive --device /dev/video0 --mode 1080p25 --channels 8 --frames 250 --warmup 4 --expect --windowed-audio --no-vbi --dump /tmp/anc-dump
+validator-v4l2 inspect-anc --dump /tmp/anc-dump --mode 1080p25 --anc-types 60/60,41/05,41/07,41/01 --expect
+validator-v4l2 inspect-ts --url http://capture.example:8080/streaming/mpegts/sdi --duration 5 --expect
+validator-v4l2 inspect-ts --file capture.ts --expect
+```
+
+`inspect-anc` checks fixture payloads against the embedded picture counter;
+it currently accepts 1080p25 dumps. This is a separate, restricted test:
+`receive` retains strict ABI/location/all-family checks. Unknown original
+location and checksum are reported. Selected types with no generated
+reference (such as hardware VPID) get presence checks only, listed in the
+report. `inspect-ts` checks CRCs of small unencrypted, uncancelled
+splice_insert sections fitting one TS packet. `--expect` additionally
+requires consecutive generated event IDs. It does not certify PMT or
+splice timing, arbitrary SCTE messages or spanning sections. URL capture
+uses plain HTTP; no external capture utility or vendor SDK is required.
