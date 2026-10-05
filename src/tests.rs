@@ -672,3 +672,47 @@ fn metadata_crc_counts_accumulate_without_hiding_frame_failures() {
         2
     );
 }
+
+#[test]
+fn connection_probe_identity_rejects_other_sources_and_repeated_frames() {
+    let (layout, mode) = geometry("SDUY");
+    let mut planes = [
+        vec![0; (layout.stride * layout.height) as usize],
+        vec![0; 1000000],
+        vec![0; 4096],
+        vec![0; 128],
+        vec![0; 34 * 1440],
+    ];
+    let mut generator = Generator::new(Config {
+        anc: false,
+        vbi: false,
+        ..Config::default()
+    });
+    generator.probe_id = 0x7a123456;
+    let mut stats = Stats::default();
+    for _ in 0..4 {
+        let [video, audio, anc, meta, vbi] = &mut planes;
+        generator
+            .fill([video, audio, anc, meta, vbi], layout, mode)
+            .unwrap();
+        stats
+            .observe_probe(&planes[0], layout, generator.probe_id)
+            .unwrap();
+    }
+    assert_eq!(stats.probe_frames, 4);
+    assert_eq!(
+        marker(&planes[0], layout).unwrap() >> 32,
+        u64::from(generator.probe_id)
+    );
+    stats
+        .observe_probe(&planes[0], layout, generator.probe_id)
+        .unwrap();
+    assert_eq!(
+        stats.probe_frames, 1,
+        "a frozen picture is not a live connection"
+    );
+    stats
+        .observe_probe(&planes[0], layout, generator.probe_id + 1)
+        .unwrap();
+    assert_eq!(stats.probe_frames, 0, "another output is not this route");
+}

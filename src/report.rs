@@ -21,7 +21,10 @@ pub fn emit(
         quote(detail)
     );
     if let Some(v) = stats {
-        s.push_str(&format!(",\"crc_errors\":{}", v.crc_errors));
+        s.push_str(&format!(
+            ",\"crc_errors\":{},\"probe_frames\":{}",
+            v.crc_errors, v.probe_frames
+        ));
         s.push_str(&format!(",\"frames\":{},\"gaps\":{},\"failure_count\":{},\"audio_samples\":{},\"audio_present_mask\":{},\"audio_present_channels\":{},\"audio_nonzero_channels\":{},\"audio_nonpcm_mask\":{},\"flags\":{},\"vbi_frames\":{},\"hw_timestamp_frames\":{},\"source_events\":{},\"anc\":{{{}}},\"errors\":[{}]",v.frames,v.gaps,v.failure_count,v.audio_samples,v.present,v.present.count_ones(),v.measured.count_ones(),v.nonpcm,v.flags,v.vbi_frames,v.hw_frames,v.source_events,v.anc.iter().map(|(k,v)|format!("{}:{v}",quote(k))).collect::<Vec<_>>().join(","),v.errors.iter().map(|s|quote(s)).collect::<Vec<_>>().join(",")));
     }
     s.push('}');

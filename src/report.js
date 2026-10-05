@@ -38,6 +38,17 @@ function reportCounts(rows) {
 function renderReport() {
   const rows = reportRows(document.getElementById('log').textContent);
   const counts = reportCounts(rows);
+  const connections = rows.filter(row => row.name.startsWith('connection '));
+  const connectionSection = document.getElementById('connections');
+  connectionSection.hidden = connections.length === 0;
+  const connectionList = document.getElementById('connection-list');
+  connectionList.replaceChildren();
+  for (const link of connections) {
+    const card = document.createElement('article'); card.className = 'connection';
+    const name = document.createElement('strong'); name.textContent = link.name.slice('connection '.length);
+    const proof = document.createElement('p'); proof.textContent = 'Video probe confirmed. Feature results are listed below.';
+    card.append(name, proof); connectionList.appendChild(card);
+  }
   for (const [status, count] of Object.entries(counts)) {
     const card = document.createElement('div'); card.className = 'count ' + status.toLowerCase();
     card.textContent = status + ': ' + count; document.getElementById('summary').appendChild(card);

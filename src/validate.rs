@@ -43,6 +43,8 @@ fn pcm_phase_offsets(
 
 #[derive(Default)]
 pub struct Stats {
+    pub probe_frames: u64,
+    last_probe: Option<u64>,
     pub windowed_audio: bool,
     pub frames: u64,
     pub crc_errors: u64,
@@ -69,6 +71,28 @@ pub struct Stats {
     expected_audio: f64,
 }
 impl Stats {
+    pub fn observe_probe(&mut self, picture: &[u8], layout: Layout, id: u32) -> Result<()> {
+        let frame = match marker(picture, layout) {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.last_probe = None;
+                self.probe_frames = 0;
+                return Ok(());
+            }
+        };
+        if id == 0 || frame >> 32 != u64::from(id) {
+            self.last_probe = None;
+            self.probe_frames = 0;
+        } else {
+            if self.last_probe.is_some_and(|last| frame != last + 1) {
+                self.probe_frames = 0;
+            }
+            self.probe_frames += 1;
+            self.last_probe = Some(frame);
+        }
+        Ok(())
+    }
+
     pub fn fail(&mut self, msg: impl Into<String>) {
         self.failure_count += 1;
         if self.errors.len() < 20 {

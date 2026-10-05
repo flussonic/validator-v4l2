@@ -123,13 +123,14 @@ fn encode_pair(dst: &mut [u8], f: &str, a: [u16; 3], b: [u16; 3]) {
 #[cfg(test)]
 pub fn video(b: &mut [u8], l: Layout, frame: u64) -> Result<()> {
     let mut picture = crate::sapsan::Picture::new(l.width, l.height, 30, 1);
-    video_picture(b, l, frame, &mut picture)
+    video_picture(b, l, frame, &mut picture, 0)
 }
 fn video_picture(
     b: &mut [u8],
     l: Layout,
     frame: u64,
     picture: &mut crate::sapsan::Picture,
+    probe_id: u32,
 ) -> Result<()> {
     let f = code(l.fourcc);
     if !FORMATS.contains(&f.as_str()) {
@@ -155,7 +156,15 @@ fn video_picture(
     let uvsize = w * h / 4;
     let pixel = |x: usize, y: usize| -> [u16; 3] {
         if y < 4 && x < 256 {
-            return [if frame >> (x / 4) & 1 != 0 { 800 } else { 128 }, 512, 512];
+            return [
+                if (frame | (u64::from(probe_id) << 32)) >> (x / 4) & 1 != 0 {
+                    800
+                } else {
+                    128
+                },
+                512,
+                512,
+            ];
         }
         let uv = w * h + y / 2 * uvw + x / 2;
         [
@@ -620,6 +629,7 @@ pub fn vbi(b: &mut [u8], lines: u32, frame: u64) -> Result<usize> {
     Ok(size)
 }
 pub struct Generator {
+    pub probe_id: u32,
     pub frame: u64,
     pub phase: u64,
     pub remainder: u64,
@@ -629,6 +639,7 @@ pub struct Generator {
 impl Generator {
     pub fn new(config: Config) -> Self {
         Self {
+            probe_id: 0,
             frame: 0,
             phase: 0,
             remainder: 0,
@@ -643,7 +654,13 @@ impl Generator {
         if self.picture.is_none() {
             self.picture = Some(crate::sapsan::Picture::new(l.width, l.height, m.num, m.den));
         }
-        video_picture(p[0], l, self.frame, self.picture.as_mut().unwrap())?;
+        video_picture(
+            p[0],
+            l,
+            self.frame,
+            self.picture.as_mut().unwrap(),
+            self.probe_id,
+        )?;
         self.remainder += 48000 * m.den;
         let samples = (self.remainder / m.num) as usize;
         self.remainder %= m.num;

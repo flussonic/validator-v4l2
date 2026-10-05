@@ -41,7 +41,7 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 impl Output {
-    fn from_value(v: &V) -> Result<Self> {
+    pub(crate) fn from_value(v: &V) -> Result<Self> {
         let code = v.get("exit_code")?;
         let reason = v.get("reason")?.string()?;
         Ok(Self {
@@ -235,6 +235,7 @@ fn checked_args(command: &str, args: &[String]) -> Result<Option<String>> {
             "--slow-ms",
             "--timeout-ms",
             "--duration",
+            "--probe-id",
         ]
         .contains(&k.as_str())
         {
@@ -376,6 +377,9 @@ impl Server {
                 ("instance", text(&self.instance)),
                 ("version", text(env!("CARGO_PKG_VERSION"))),
             ]));
+        }
+        if method == "GET" && path == "/v1/topology" {
+            return self.inspect("topology", vec![]);
         }
         if method == "GET" && path == "/v1/devices" {
             return self.inspect("list", vec![]);

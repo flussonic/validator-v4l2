@@ -53,11 +53,31 @@ the log filename; HTML/JSON names are derived from it unless overridden with
 The HTML is self-contained, with status totals, search, filters and per-case
 video/audio/ANC/CRC measurements and error details.
 
-Without `--pair`, the check inventories every board and captures locked inputs;
-output transmission and features requiring a test source remain unverified.
-With `--pair`, the coordinator runs the timing/format/audio/ANC/HDR matrix
-using both endpoints on the specified agent. The workstation needs no boards.
-`quick` remains available as an alias of `quickcheck`.
+Without `--pair`, `quickcheck` automatically inventories every board on the
+agent and on the local Linux coordinator, sends uniquely identified video
+probes through each compatible output/input candidate, and discovers local
+loops and connections between hosts in both directions. It then runs the
+video/audio/ANC/HDR matrix on every discovered route. Capture evidence proves
+the connection even when PCM or CRC validation fails; those features are
+checked separately in the matrix and remain failures.
+
+For a coordinator without boards, add a second agent with
+`--peer-agent http://second-server:5040`. Both servers must run the current
+validator. Duplicate endpoints on the same Linux machine are scanned once.
+`--discover-only` saves just the inventory and connection map;
+`--inventory-only` inventories and captures locked inputs without transmitting.
+An explicit `--pair` tests only that pair. The legacy `quick` command retains
+its inventory/locked-input behavior.
+
+Discovery sends a live signal and changes settings on outputs, so the test
+ports must be free. Probes run sequentially, reopen the transmitter per
+candidate for half-duplex boards and have bounded capture timeouts. Only three
+or more consecutive frames with this probe's video identity establish a route.
+Discovery uses one common mode/format per candidate, preferring HD 25 fps and
+SDUY; an undetected connection is reported as SKIP, never as full coverage.
+Unmatched inputs with an external signal can be observed, but their source
+content cannot be verified. Unsupported receiver timings/formats are SKIP.
+
 
 ## Routes
 
@@ -67,6 +87,7 @@ HTTP connection. Optional authentication is `Authorization: Bearer TOKEN`.
 | Method / route | Request | Result |
 |---|---|---|
 | GET `/v1/health` | none | API version, executable version, agent instance |
+| GET `/v1/topology` | none | structured host identity and node modes/formats in `stdout` |
 | GET `/v1/devices` | none | inventory JSONL in `stdout`, `stderr`, `exit_code` |
 | POST `/v1/plan` | `args` array for `plan` | mode/feature plan in `stdout` |
 | POST `/v1/jobs` | `command`, `args`, optional `run_id`, `lease_secs` | unique task `id` |

@@ -2,6 +2,7 @@
 mod agent;
 mod artifacts;
 mod device;
+mod discovery;
 mod eac3;
 mod json;
 mod pattern;
@@ -76,6 +77,9 @@ Options:
   --seed N            reproducible randomized soak order (default 1)
   --tx-url URL --rx-url URL  HTTP agent endpoints (omitted = local Linux)
   --agent URL          run checks on one HTTP agent (both sides of a local loop)
+  --peer-agent URL     additional server for automatic connection discovery
+  --inventory-only    inventory/locked inputs without transmitting discovery probes
+  --discover-only     find connections without running the full matrix
   --agent-url URL      HTTP agent for inventory
   --listen ADDRESS    HTTP agent bind address (default 0.0.0.0:5040)
   --token TOKEN       optional HTTP agent bearer token
@@ -126,6 +130,8 @@ impl Options {
                 "--stop-on-stdin",
                 "--exhaustive",
                 "--scte104-fragments",
+                "--inventory-only",
+                "--discover-only",
             ]
             .contains(&k.as_str())
             {
@@ -151,6 +157,8 @@ impl Options {
                 "--rx-url",
                 "--agent-url",
                 "--agent",
+                "--peer-agent",
+                "--probe-id",
                 "--listen",
                 "--token",
                 "--agent-token",
@@ -230,6 +238,7 @@ impl Options {
             return Err("frames and timeout must be positive".into());
         }
         o.u32("--warmup", 0)?;
+        o.u32("--probe-id", 0)?;
         Ok(o)
     }
     fn get<'a>(&'a self, k: &str, d: &'a str) -> &'a str {
@@ -358,7 +367,23 @@ fn inventory(o: &Options) -> Result<bool> {
                 .or_else(|| std::env::var("VALIDATOR_HTTP_TOKEN").ok()),
         )?;
         let output = agent::inspect(endpoint, "list", &[])?;
-        let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        let raw = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        let mut text = String::new();
+        for line in raw.lines() {
+            let mut record = json::parse(line)?;
+            if let json::Value::Object(fields) = &mut record {
+                let case = fields
+                    .get("case")
+                    .ok_or("inventory case missing")?
+                    .string()?
+                    .to_string();
+                fields.insert("case".into(), json::Value::Str(format!("{url} {case}")));
+                fields.insert("agent".into(), json::Value::Str(url.clone()));
+                fields.insert("run_id".into(), json::Value::Str(run_id().into()));
+            }
+            text.push_str(&record.encode());
+            text.push('\n');
+        }
         print!("{text}");
         if let Some(path) = o.report() {
             use std::io::Write;
@@ -535,6 +560,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         },
     )?;
     let mut gen = Generator::new(c.clone());
+    gen.probe_id = o.u32("--probe-id", 0)?;
     let mut stats = Stats::default();
     stats.windowed_audio = o.has("--windowed-audio");
     let frames = o.number("--frames", 50)?;
@@ -600,6 +626,13 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
                 produced += 1;
             }
         } else {
+            if let Some(id) = o.values.get("--probe-id") {
+                stats.observe_probe(
+                    f.planes()[0],
+                    d.layout,
+                    id.parse().map_err(|_| "invalid probe ID")?,
+                )?;
+            }
             if let Err(e) = stats.frame(
                 f.planes(),
                 d.layout,
@@ -1029,7 +1062,14 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
     emit(
         o.report(),
         if ok { "PASS" } else { "FAIL" },
-        &format!("{} -> {} {:?}", tx, rx, case),
+        &format!(
+            "{} {} -> {} {} {:?}",
+            o.get("--tx-url", "local"),
+            tx,
+            o.get("--rx-url", "local"),
+            rx,
+            case
+        ),
         &detail,
         None,
     )?;
@@ -1191,13 +1231,8 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
     }
     Ok(cases)
 }
-fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
-    let tx = if o.values.contains_key("--pair") {
-        pair(o)?.0
-    } else {
-        o.required("--device")?
-    };
-    let mut cases = if o.values.contains_key("--tx-host") || o.values.contains_key("--tx-url") {
+fn planned_cases(o: &Options, tx: &str) -> Result<Vec<Case>> {
+    let cases = if o.values.contains_key("--tx-host") || o.values.contains_key("--tx-url") {
         let mut args = vec![
             "plan".into(),
             "--wire-plan".into(),
@@ -1247,6 +1282,15 @@ fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
     if cases.is_empty() {
         return Err("no supported generator modes/formats".into());
     }
+    Ok(cases)
+}
+fn run_matrix(o: &Options, soak: bool) -> Result<bool> {
+    let tx = if o.values.contains_key("--pair") {
+        pair(o)?.0
+    } else {
+        o.required("--device")?
+    };
+    let mut cases = planned_cases(o, tx)?;
     let start = Instant::now();
     let duration = o.number("--duration", if soak { 3600 } else { 0 })?;
     let cycles = o.number("--cycles", if soak { u64::MAX } else { 1 })?;
@@ -1411,7 +1455,12 @@ fn run(o: &Options) -> Result<bool> {
         }
         "serve" => agent::serve(o),
         "list" => inventory(o),
-        "quick" | "quickcheck" => quick(o),
+        "quick" => quick(o),
+        "quickcheck" => discovery::quickcheck(o),
+        "topology" => {
+            println!("{}", discovery::topology()?.encode());
+            Ok(true)
+        }
         "receive" => stream(o, false),
         "transmit" => stream(o, true),
         "loop" => {

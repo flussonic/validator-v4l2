@@ -14,6 +14,7 @@ h1{font-size:30px;letter-spacing:-.7px;margin:6px 0}header p{margin:0;color:#c7d
 #coverage{color:#5f6d82;margin-bottom:24px}
 .toolbar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;background:#fff;border:1px solid #dce3ec;border-radius:12px;padding:16px 20px}
 label{font-size:13px;font-weight:600;color:#52627a}input,select{font:inherit;padding:9px 12px;border:1px solid #d2dae7;border-radius:7px;margin-left:8px;background:#f9fbfd;color:#24324a}input{min-width:260px}input:focus,select:focus{outline:2px solid #98bcde;outline-offset:2px}
+#connections{margin:24px 0}#connections h2{font-size:18px}#connection-list{display:flex;gap:12px;flex-wrap:wrap}.connection{background:#fff;border:1px solid #dce3ec;border-left:4px solid #327aab;border-radius:10px;padding:16px 20px;min-width:260px;flex:1}.connection strong{display:block;font-size:13px;overflow-wrap:anywhere}.connection p{margin:6px 0 0;color:#68788d;font-size:12px}
 .table-wrap{overflow:auto;margin-top:20px;border:1px solid #dce3ec;border-radius:12px;background:#fff;box-shadow:0 5px 18px #22334a08}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:14px 16px;border-bottom:1px solid #e7ecf2;vertical-align:top}th{background:#edf2f8;color:#52627a;font-size:11px;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}td:first-child{max-width:520px;overflow-wrap:anywhere}tr:last-child td{border-bottom:0}tbody tr:hover{background:#f7faff}td:nth-child(2){font-weight:700}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;background:#f1f4f9;border-radius:8px;color:#394a60}details{margin-top:8px}summary{cursor:pointer;color:#336eab}footer{font-size:12px;color:#68788d;padding-top:22px}#log{display:none}
@@ -22,7 +23,8 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;back
 <header><small>FLUSSONIC · HARDWARE VALIDATION</small><h1>SDI validator report</h1><p>Video, audio, ANC, HDR and driver stability</p></header>
 <main>
 <div id="summary"></div><p id="coverage"></p>
-<div class="toolbar"><label>Result <select id="status"><option value="">All</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
+<section id="connections" hidden><h2>Discovered connections</h2><div id="connection-list"></div></section>
+<div class="toolbar"><label>Result <select id="status"><option value="">All</option><option>INFO</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
 <label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label></div>
 <div class="table-wrap"><table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio (present / measured)</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table></div></main>
 <footer>PASS applies to the configured checks in that case; disabled checks do not have coverage. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
