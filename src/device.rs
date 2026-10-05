@@ -10,6 +10,12 @@ pub struct Info {
     pub caps: u32,
     pub output: u32,
 }
+impl Info {
+    pub fn multiplanar(&self) -> bool {
+        // V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_VIDEO_OUTPUT_MPLANE.
+        self.caps & (0x0000_1000 | 0x0000_2000) != 0
+    }
+}
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
 pub struct Mode {

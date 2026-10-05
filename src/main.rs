@@ -264,24 +264,33 @@ fn attrs(p: &str) -> BTreeMap<String, String> {
 fn inventory(o: &Options) -> Result<bool> {
     let mut ok = true;
     for p in nodes(o)? {
-        let result = (|| -> Result<String> {
+        let result = (|| -> Result<(&str, String)> {
             let i = probe(&p)?;
+            if !i.multiplanar() {
+                return Ok(("SKIP", format!(
+                    "driver={} card={} caps=0x{:08x}: no multiplanar video capability; outside the five-plane SDI contract",
+                    text(&i.driver), text(&i.card), i.caps
+                )));
+            }
             contract(&p, i.output != 0)?;
             let ms = modes(&p)?;
             let fs = formats(&p, i.output != 0)?;
-            Ok(format!(
-                "driver={} card={} bus={} direction={} formats={} timings={} sysfs={:?}",
-                text(&i.driver),
-                text(&i.card),
-                text(&i.bus),
-                if i.output != 0 { "output" } else { "capture" },
-                fs.iter().map(|f| code(*f)).collect::<Vec<_>>().join(","),
-                ms.iter().map(|m| m.name()).collect::<Vec<_>>().join(","),
-                attrs(&p)
+            Ok((
+                "INFO",
+                format!(
+                    "driver={} card={} bus={} direction={} formats={} timings={} sysfs={:?}",
+                    text(&i.driver),
+                    text(&i.card),
+                    text(&i.bus),
+                    if i.output != 0 { "output" } else { "capture" },
+                    fs.iter().map(|f| code(*f)).collect::<Vec<_>>().join(","),
+                    ms.iter().map(|m| m.name()).collect::<Vec<_>>().join(","),
+                    attrs(&p)
+                ),
             ))
         })();
         match result {
-            Ok(detail) => emit(o.report(), "INFO", &p, &detail, None)?,
+            Ok((status, detail)) => emit(o.report(), status, &p, &detail, None)?,
             Err(e) => {
                 emit(o.report(), "FAIL", &p, &e, None)?;
                 ok = false;
@@ -787,6 +796,9 @@ fn quick(o: &Options) -> Result<bool> {
     let mut ok = inventory(o)?;
     for p in nodes(o)? {
         let i = probe(&p)?;
+        if !i.multiplanar() {
+            continue;
+        }
         if i.output != 0 {
             emit(
                 o.report(),
