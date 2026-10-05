@@ -56,7 +56,7 @@ function renderReport() {
       const row = document.createElement('tr'), data = item.measured;
       cell(row, item.name); cell(row, item.status).className = item.status.toLowerCase();
       cell(row, (data.frames ?? '—') + ' / ' + (data.gaps ?? '—'));
-      cell(row, data.crc_errors ?? '—'); cell(row, data.audio_present_channels ?? '—');
+      cell(row, data.crc_errors ?? '—'); cell(row, (data.audio_present_channels ?? '—') + ' / ' + (data.audio_nonzero_channels ?? '—'));
       const anc = data.anc && typeof data.anc === 'object' ? Object.entries(data.anc).map(([key, value]) => key + ': ' + value).join(', ') : '';
       const td = cell(row, anc + (item.errors.length ? '\n' + item.errors.join('\n') : ''));
       const details = document.createElement('details'), title = document.createElement('summary'), pre = document.createElement('pre');

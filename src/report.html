@@ -8,7 +8,7 @@ body{font:15px system-ui,sans-serif;margin:28px;color:#17212b;background:#f6f8fa
 <div id="summary"></div><p id="coverage"></p>
 <label>Result <select id="status"><option value="">All</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
 <label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label>
-<table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio channels</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table>
-<footer>PASS means validation completed. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
+<table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio (present / measured)</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table>
+<footer>PASS applies to the configured checks in that case; disabled checks do not have coverage. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
 <textarea id="log" aria-hidden="true">{{LOG}}</textarea>
 <script>{{SCRIPT}}</script></body></html>
