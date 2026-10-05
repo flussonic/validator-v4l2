@@ -553,3 +553,16 @@ fn encoded_audio_payload_corruption_is_detected() {
         .iter()
         .any(|e| e.contains("337M transport payload")));
 }
+
+#[test]
+fn scte104_fixture_uses_vanc_y_for_hd() {
+    let (_, mode) = geometry("SDUY");
+    let packet = fixtures(1, mode)
+        .into_iter()
+        .find(|p| p.did == 0x41 && p.sdid == 7)
+        .unwrap();
+    assert_eq!(
+        packet.flags, 0,
+        "ST 2010 section 6 requires the HD Y stream"
+    );
+}

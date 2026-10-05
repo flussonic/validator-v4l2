@@ -493,11 +493,8 @@ pub fn fixtures(frame: u64, mode: Mode) -> Vec<Packet> {
             line: 12,
             did: 0x41,
             sdid: 7,
-            flags: if mode.total_lines == 625 || mode.total_lines == 525 {
-                0
-            } else {
-                2
-            },
+            // ST 2010 section 6 requires SCTE-104 in the Y stream for HD.
+            flags: 0,
             data: scte,
         },
         Packet {
