@@ -67,6 +67,7 @@ The default checks each frame's sample count within one sample.
 For distributed testing, start the built-in HTTP agent on each server:
 
 ```sh
+export VALIDATOR_HTTP_TOKEN="same-long-random-token-on-agents-and-coordinator"
 ./validator-v4l2 serve --listen 0.0.0.0:8787
 ```
 

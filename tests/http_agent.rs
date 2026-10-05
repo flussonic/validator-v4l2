@@ -202,3 +202,14 @@ fn coordinator_uses_two_agents_and_writes_failure_report_after_worker_errors() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn network_facing_agent_requires_authentication_before_accepting_jobs() {
+    let out = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
+        .args(["serve", "--listen", "0.0.0.0:0"])
+        .env_remove("VALIDATOR_HTTP_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("require a token"));
+}

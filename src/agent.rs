@@ -517,14 +517,25 @@ fn reply(stream: &mut TcpStream, status: u16, body: &str) {
 pub fn serve(o: &Options) -> Result<bool> {
     let listener =
         TcpListener::bind(o.get("--listen", "127.0.0.1:8787")).map_err(|e| e.to_string())?;
+    let token = o
+        .values
+        .get("--token")
+        .cloned()
+        .or_else(|| std::env::var("VALIDATOR_HTTP_TOKEN").ok())
+        .filter(|t| !t.is_empty());
+    if !listener
+        .local_addr()
+        .map_err(|e| e.to_string())?
+        .ip()
+        .is_loopback()
+        && token.as_ref().map_or(true, |t| t.len() < 16)
+    {
+        return Err("network-facing HTTP agents require a token of at least 16 characters".into());
+    }
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let server = Arc::new(Server {
         jobs: Mutex::new(BTreeMap::new()),
-        token: o
-            .values
-            .get("--token")
-            .cloned()
-            .or_else(|| std::env::var("VALIDATOR_HTTP_TOKEN").ok()),
+        token,
         serial: AtomicUsize::new(1),
         instance: id(),
         binary: std::env::current_exe().map_err(|e| e.to_string())?,

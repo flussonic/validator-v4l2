@@ -5,10 +5,12 @@ there are no additional runtime or Cargo dependencies. Start an agent on each
 Linux machine with free V4L2 devices:
 
 ```sh
+export VALIDATOR_HTTP_TOKEN="same-long-random-token-on-agents-and-coordinator"
 ./validator-v4l2 serve --listen 0.0.0.0:8787
 ```
 
-The default bind address is loopback. `--token TOKEN` or the
+The default bind address is loopback. A network-facing bind requires a token
+of at least 16 characters. `--token TOKEN` or the
 `VALIDATOR_HTTP_TOKEN` environment variable enables bearer authentication.
 The coordinator accepts `--agent-token TOKEN` or the same environment variable.
 
