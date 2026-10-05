@@ -15,7 +15,7 @@ function parseChild(detail, side) {
   return null;
 }
 function reportRows(log) {
-  return log.split(/\r?\n/).filter(line => line.trim()).map((line, index) => {
+  const rows = log.split(/\r?\n/).filter(line => line.trim()).map((line, index) => {
     try {
       const record = JSON.parse(line);
       const statuses = ['PASS', 'FAIL', 'SKIP', 'OBSERVED', 'INFO', 'PLAN'];
@@ -29,6 +29,36 @@ function reportRows(log) {
       return {record: {}, measured: {}, errors: [String(error)], status: 'INVALID', name: 'Log line ' + (index + 1), detail: line};
     }
   });
+  const inventory = new Map();
+  for (const row of rows) {
+    const match = row.detail.match(/^driver=(.*?) card=(.*?) bus=(.*?) direction=/);
+    if (!match) continue;
+    const refs = endpointRefs(row.name);
+    if (refs.length !== 1) continue;
+    const ref = refs[0];
+    inventory.set((ref.agent || '') + '|' + ref.device,
+      {name: match[2], driver: match[1], bus: match[3], device: ref.device, agent: ref.agent});
+  }
+  for (const row of rows) {
+    const explicit = Array.isArray(row.record.boards) ? row.record.boards : [];
+    const refs = endpointRefs(row.name);
+    row.boards = refs.length ? refs.flatMap(ref => {
+      const captured = explicit.filter(board => board.device === ref.device && (!board.agent || !ref.agent || board.agent === ref.agent));
+      if (captured.length === 1) return captured;
+      const exact = inventory.get((ref.agent || '') + '|' + ref.device);
+      if (exact) return [exact];
+      const candidates = [...inventory.values()].filter(board => board.device === ref.device);
+      // Old single-host logs have no agent field. Never guess between different servers.
+      if (candidates.length === 1 && (!candidates[0].agent || !ref.agent)) return candidates;
+      return [];
+    }) : explicit;
+    row.boardLabel = row.boards.map(board => board.name).join(' → ');
+  }
+  return rows;
+}
+function endpointRefs(name) {
+  return [...name.matchAll(/(?:(http:\/\/[^\s]+|local)\s+)?(\/dev\/video\d+)\b/g)]
+    .map(match => ({agent: match[1] || null, device: match[2]}));
 }
 function reportCounts(rows) {
   const counts = {PASS: 0, FAIL: 0, SKIP: 0, OBSERVED: 0, INVALID: 0};
@@ -45,8 +75,8 @@ function renderReport() {
   connectionList.replaceChildren();
   for (const link of connections) {
     const card = document.createElement('article'); card.className = 'connection';
-    const name = document.createElement('strong'); name.textContent = link.name.slice('connection '.length);
-    const proof = document.createElement('p'); proof.textContent = 'Video probe confirmed. Feature results are listed below.';
+    const name = document.createElement('strong'); name.textContent = link.boardLabel || link.name.slice('connection '.length);
+    const proof = document.createElement('p'); proof.textContent = link.name.slice('connection '.length) + '\nVideo probe confirmed. Feature results are listed below.';
     card.append(name, proof); connectionList.appendChild(card);
   }
   for (const [status, count] of Object.entries(counts)) {
@@ -63,9 +93,9 @@ function renderReport() {
     const query = search.value.toLowerCase();
     for (const item of rows) {
       if (filter.value && item.status !== filter.value) continue;
-      if (query && !(item.name + ' ' + item.detail + ' ' + item.errors.join(' ')).toLowerCase().includes(query)) continue;
+      if (query && !(item.boardLabel + ' ' + item.name + ' ' + item.detail + ' ' + item.errors.join(' ')).toLowerCase().includes(query)) continue;
       const row = document.createElement('tr'), data = item.measured;
-      cell(row, item.name); cell(row, item.status).className = item.status.toLowerCase();
+      cell(row, item.boardLabel || '—'); cell(row, item.name); cell(row, item.status).className = item.status.toLowerCase();
       cell(row, (data.frames ?? '—') + ' / ' + (data.gaps ?? '—'));
       cell(row, data.crc_errors ?? '—'); cell(row, (data.audio_present_channels ?? '—') + ' / ' + (data.audio_nonzero_channels ?? '—'));
       const anc = data.anc && typeof data.anc === 'object' ? Object.entries(data.anc).map(([key, value]) => key + ': ' + value).join(', ') : '';

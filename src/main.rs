@@ -530,6 +530,7 @@ impl Drop for Settings {
 fn stream(o: &Options, output: bool) -> Result<bool> {
     let p = o.required("--device")?;
     let i = probe(p)?;
+    let board = report::device_board(&i, p);
     if (i.output != 0) != output || i.caps & (if output { 0x2000 } else { 0x1000 }) == 0 {
         return Err("node direction/common mplane capability mismatch".into());
     }
@@ -702,7 +703,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         discarded,
         after
     );
-    emit(o.report(), status, p, &detail, Some(&stats))?;
+    report::emit_with_boards(o.report(), status, p, &detail, Some(&stats), &[board])?;
     Ok(stats.failure_count == 0)
 }
 #[derive(Clone, Debug)]
@@ -1059,7 +1060,12 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         String::from_utf8_lossy(&received.stdout),
         String::from_utf8_lossy(&received.stderr)
     );
-    emit(
+    let mut boards = report::worker_boards(&transmitted.stdout, o.get("--tx-url", "local"));
+    boards.extend(report::worker_boards(
+        &received.stdout,
+        o.get("--rx-url", "local"),
+    ));
+    report::emit_with_boards(
         o.report(),
         if ok { "PASS" } else { "FAIL" },
         &format!(
@@ -1072,6 +1078,7 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         ),
         &detail,
         None,
+        &boards,
     )?;
     Ok(ok)
 }

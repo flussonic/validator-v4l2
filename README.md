@@ -79,7 +79,9 @@ For a quick check of all boards on one remote server:
 
 `quickcheck` automatically saves uniquely named `.html` and `.json` reports
 in the coordinator's current directory, alongside an append-only `.jsonl` log.
-The JSON file is a standard array of result records. `--report PATH` selects
+The JSON file is a standard array of result records. Each hardware result
+includes `boards` with the board name, driver, PCI bus, device node and agent.
+The HTML shows board names in the case table and connection map. `--report PATH` selects
 the log filename; HTML/JSON names are derived from it unless overridden with
 `--html PATH` / `--json PATH`. Failed and interrupted checks also export reports.
 The HTML is self-contained, with status totals, search, filters and per-case
