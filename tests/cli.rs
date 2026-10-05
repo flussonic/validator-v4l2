@@ -49,6 +49,20 @@ fn invalid_parameters_fail_before_accessing_hardware() {
         vec!["receive", "--channels", "17"],
         vec!["transmit", "--flags", "48"],
         vec!["receive", "--frames", "0"],
+        vec![
+            "quickcheck",
+            "--agent",
+            "http://example:5040",
+            "--tx-host",
+            "example",
+        ],
+        vec![
+            "quickcheck",
+            "--agent",
+            "http://example:5040",
+            "--rx-url",
+            "http://example:5041",
+        ],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
             .args(options)

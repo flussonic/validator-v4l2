@@ -204,12 +204,105 @@ fn coordinator_uses_two_agents_and_writes_failure_report_after_worker_errors() {
 }
 
 #[test]
-fn network_facing_agent_requires_authentication_before_accepting_jobs() {
+fn quickcheck_agent_runs_remotely_and_saves_report() {
+    let agent = Agent::start(None);
+    let dir = std::env::temp_dir().join(format!("validator-quickcheck-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("quick.jsonl");
     let out = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
+        .args([
+            "quickcheck",
+            "--agent",
+            &format!("http://{}", agent.address),
+            "--device",
+            "/dev/video999999",
+            "--report",
+        ])
+        .arg(&log)
+        .arg("--html")
+        .arg(dir.join("quick.html"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let (_, jobs) = agent.request("GET", "/v1/jobs", "", None);
+    let jobs = jobs.array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].get("command").unwrap().string().unwrap(), "quick");
+    assert!(!jobs[0].get("running").unwrap().boolean().unwrap());
+    let log = std::fs::read_to_string(log).unwrap();
+    assert!(log.contains("/dev/video999999"));
+    assert!(log.contains("\"status\":\"FAIL\""));
+    assert!(dir.join("quick.html").exists());
+    let exported = std::fs::read_to_string(dir.join("quick.json")).unwrap();
+    let records = json::parse(&exported).unwrap();
+    assert!(records
+        .array()
+        .unwrap()
+        .iter()
+        .any(|r| r.get("status").unwrap().string().unwrap() == "FAIL"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn network_bind_accepts_optional_authentication() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
         .args(["serve", "--listen", "0.0.0.0:0"])
         .env_remove("VALIDATOR_HTTP_TOKEN")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        use std::io::BufRead;
+        let line = std::io::BufReader::new(stderr)
+            .lines()
+            .next()
+            .unwrap()
+            .unwrap();
+        let _ = send.send(line);
+    });
+    let line = receive.recv_timeout(Duration::from_secs(5));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(line
+        .unwrap()
+        .starts_with("validator HTTP agent listening on 0.0.0.0:"));
+}
+
+#[test]
+fn bare_quickcheck_produces_html_and_json_even_when_agent_is_unreachable() {
+    let dir =
+        std::env::temp_dir().join(format!("validator-default-reports-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+    let out = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
+        .current_dir(&dir)
+        .args(["quickcheck", "--agent", &format!("http://{address}")])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("require a token"));
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|f| f.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 3);
+    let file = files
+        .iter()
+        .find(|p| p.extension().unwrap() == "json")
+        .unwrap();
+    let records = json::parse(&std::fs::read_to_string(file).unwrap()).unwrap();
+    assert_eq!(
+        records.array().unwrap()[0]
+            .get("status")
+            .unwrap()
+            .string()
+            .unwrap(),
+        "FAIL"
+    );
+    assert!(files.iter().any(|p| p.extension().unwrap() == "html"));
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -5,23 +5,22 @@ there are no additional runtime or Cargo dependencies. Start an agent on each
 Linux machine with free V4L2 devices:
 
 ```sh
-export VALIDATOR_HTTP_TOKEN="same-long-random-token-on-agents-and-coordinator"
-./validator-v4l2 serve --listen 0.0.0.0:8787
+./validator-v4l2 serve
 ```
 
-The default bind address is loopback. A network-facing bind requires a token
-of at least 16 characters. `--token TOKEN` or the
+The default bind address is `0.0.0.0:5040`. Bearer authentication is optional. `--token TOKEN` or the
 `VALIDATOR_HTTP_TOKEN` environment variable enables bearer authentication.
 The coordinator accepts `--agent-token TOKEN` or the same environment variable.
+When authentication is wanted, set the same `VALIDATOR_HTTP_TOKEN` on both machines.
 
 Run from a workstation or either server; connect the SDI cable from the named
 output on the transmitter to the named input on the receiver:
 
 ```sh
-./validator-v4l2 list --agent-url http://sender:8787
-./validator-v4l2 quick --tx-url http://sender:8787 --rx-url http://receiver:8787 \
+./validator-v4l2 list --agent-url http://sender:5040
+./validator-v4l2 quick --tx-url http://sender:5040 --rx-url http://receiver:5040 \
   --pair /dev/video4=/dev/video1 --report quick.jsonl --html quick.html
-./validator-v4l2 soak --tx-url http://sender:8787 --rx-url http://receiver:8787 \
+./validator-v4l2 soak --tx-url http://sender:5040 --rx-url http://receiver:5040 \
   --pair /dev/video4=/dev/video1 --duration 86400 --seed 1 \
   --report soak.jsonl --html soak.html
 ```
@@ -32,6 +31,33 @@ end-to-end validation requires a receiver. The coordinator gathers the mode
 plan from the transmitter agent. Each case starts a transmitter task, then a
 receiver task with matching settings. It collects both results and stops the
 transmitter before moving on. Test traffic travels over SDI, not HTTP.
+
+For a quick check of all boards on one remote server:
+
+```sh
+# On the server with the boards:
+./validator-v4l2 serve
+# On the workstation:
+./validator-v4l2 quickcheck --agent http://first-server:5040
+# Save a report on the workstation:
+./validator-v4l2 quickcheck --agent http://first-server:5040 --report quick.jsonl --html quick.html
+# Exercise a connected output/input loop on that server:
+./validator-v4l2 quickcheck --agent http://first-server:5040 --pair /dev/video4=/dev/video1 --report loop.jsonl --html loop.html
+```
+
+`quickcheck` automatically saves uniquely named `.html` and `.json` reports
+in the coordinator's current directory, alongside an append-only `.jsonl` log.
+The JSON file is a standard array of result records. `--report PATH` selects
+the log filename; HTML/JSON names are derived from it unless overridden with
+`--html PATH` / `--json PATH`. Failed and interrupted checks also export reports.
+The HTML is self-contained, with status totals, search, filters and per-case
+video/audio/ANC/CRC measurements and error details.
+
+Without `--pair`, the check inventories every board and captures locked inputs;
+output transmission and features requiring a test source remain unverified.
+With `--pair`, the coordinator runs the timing/format/audio/ANC/HDR matrix
+using both endpoints on the specified agent. The workstation needs no boards.
+`quick` remains available as an alias of `quickcheck`.
 
 ## Routes
 
@@ -62,7 +88,7 @@ then kills the child after two seconds if needed. Lease expiry is a failure
 even if a gracefully stopped worker returns zero. Explicit transmitter stop
 after reception is normal. Agent shutdown also stops active workers.
 
-Tasks execute only validator `transmit`, `receive` or `software` commands,
+Tasks execute only validator `transmit`, `receive`, unpaired `quick` or `software` commands,
 without a shell. Hardware paths are restricted to `/dev/videoN`. Agent requests
 cannot write arbitrary report/dump files or recursively start remote commands.
 Each device is reserved while its task runs; a second task receives HTTP 409.

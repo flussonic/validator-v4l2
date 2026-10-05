@@ -39,24 +39,8 @@ pub fn emit(
 
 /// Render the saved log without requiring network access or additional packages.
 pub fn write_html(source: &str, destination: &str) -> Result<()> {
-    let source_path = fs::canonicalize(source).map_err(|e| e.to_string())?;
-    if source_path
-        == fs::canonicalize(destination).unwrap_or_else(|_| Path::new(destination).into())
-    {
-        return Err("HTML destination must differ from the JSONL log".into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(source), Ok(destination)) =
-            (fs::metadata(&source_path), fs::metadata(destination))
-        {
-            if source.dev() == destination.dev() && source.ino() == destination.ino() {
-                return Err("HTML destination must differ from the JSONL log".into());
-            }
-        }
-    }
-    let log = fs::read_to_string(source_path).map_err(|e| e.to_string())?;
+    check_destination(source, destination)?;
+    let log = fs::read_to_string(source).map_err(|e| e.to_string())?;
     let escaped = log
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -65,4 +49,39 @@ pub fn write_html(source: &str, destination: &str) -> Result<()> {
         .replacen("{{SCRIPT}}", include_str!("report.js"), 1)
         .replacen("{{LOG}}", &escaped, 1);
     fs::write(destination, page).map_err(|e| e.to_string())
+}
+
+fn check_destination(source: &str, destination: &str) -> Result<()> {
+    let source_path = fs::canonicalize(source).map_err(|e| e.to_string())?;
+    if source_path
+        == fs::canonicalize(destination).unwrap_or_else(|_| Path::new(destination).into())
+    {
+        return Err("Report destination must differ from the JSONL log".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(source), Ok(destination)) =
+            (fs::metadata(&source_path), fs::metadata(destination))
+        {
+            if source.dev() == destination.dev() && source.ino() == destination.ino() {
+                return Err("Report destination must differ from the JSONL log".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn write_json(source: &str, destination: &str) -> Result<()> {
+    check_destination(source, destination)?;
+    let log = fs::read_to_string(source).map_err(|e| e.to_string())?;
+    let mut records = vec![];
+    for (index, line) in log.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        crate::json::parse(line).map_err(|e| format!("invalid report line {}: {e}", index + 1))?;
+        records.push(format!("  {line}"));
+    }
+    fs::write(destination, format!("[\n{}\n]\n", records.join(",\n"))).map_err(|e| e.to_string())
 }

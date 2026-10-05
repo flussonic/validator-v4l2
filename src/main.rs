@@ -38,8 +38,9 @@ fn run_id() -> &'static str {
 pub type Result<T> = std::result::Result<T, String>;
 const HELP: &str = r#"validator-v4l2 — common SDI V4L2 compliance and endurance validator
 
-  validator-v4l2 serve --listen 0.0.0.0:8787
-  validator-v4l2 list --agent-url http://server:8787
+  validator-v4l2 serve
+  validator-v4l2 list --agent-url http://server:5040
+  validator-v4l2 quickcheck --agent http://server:5040 [--pair /dev/video4=/dev/video1]
   validator-v4l2 list
   validator-v4l2 quick [--pair /dev/video4=/dev/video1] [--report result.jsonl]
   validator-v4l2 transmit --device /dev/video4 --mode 1080p25 [options]
@@ -74,14 +75,18 @@ Options:
   --cycles N          bound soak by matrix cycles as well as duration
   --seed N            reproducible randomized soak order (default 1)
   --tx-url URL --rx-url URL  HTTP agent endpoints (omitted = local Linux)
+  --agent URL          run checks on one HTTP agent (both sides of a local loop)
   --agent-url URL      HTTP agent for inventory
-  --listen ADDRESS    HTTP agent bind address (default 127.0.0.1:8787)
+  --listen ADDRESS    HTTP agent bind address (default 0.0.0.0:5040)
   --token TOKEN       optional HTTP agent bearer token
   --agent-token TOKEN optional coordinator bearer token
   --tx-host HOST --rx-host HOST  legacy SSH endpoints
   --remote-bin PATH    remote executable (default validator-v4l2)
   --report PATH        append machine-readable JSON Lines
   --html PATH          also save a standalone browsable report (requires --report)
+  --json PATH          also save results as a JSON array
+
+quickcheck saves HTML, JSON and the append-only JSONL log by default.
   --dump DIR           dump all five planes, or inspect an existing capture
   --anc-types DID/SDID,...  hex pairs to inspect (payload coverage, not full ABI)
   --file PATH          generated MPEG-TS capture for inspect-ts
@@ -145,6 +150,7 @@ impl Options {
                 "--tx-url",
                 "--rx-url",
                 "--agent-url",
+                "--agent",
                 "--listen",
                 "--token",
                 "--agent-token",
@@ -153,6 +159,7 @@ impl Options {
                 "--remote-bin",
                 "--report",
                 "--html",
+                "--json",
                 "--dump",
                 "--file",
                 "--url",
@@ -167,6 +174,43 @@ impl Options {
             } else {
                 return Err(format!("unknown option {k}"));
             }
+        }
+        if let Some(url) = values.remove("--agent") {
+            for key in ["--agent-url", "--tx-url", "--rx-url"] {
+                if values.contains_key(key) {
+                    return Err(format!("--agent and {key} are mutually exclusive"));
+                }
+                values.insert(key.into(), url.clone());
+            }
+        }
+        if cmd == "quickcheck" {
+            let log = values
+                .entry("--report".into())
+                .or_insert_with(|| {
+                    format!(
+                        "quickcheck-{}-{}.jsonl",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos(),
+                        std::process::id()
+                    )
+                })
+                .clone();
+            values.entry("--html".into()).or_insert_with(|| {
+                PathBuf::from(&log)
+                    .with_extension("html")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            values.entry("--json".into()).or_insert_with(|| {
+                let path = PathBuf::from(&log).with_extension("json");
+                if path == std::path::Path::new(&log) {
+                    format!("{log}.results.json")
+                } else {
+                    path.to_string_lossy().into_owned()
+                }
+            });
         }
         let o = Self {
             cmd,
@@ -995,6 +1039,44 @@ fn quick(o: &Options) -> Result<bool> {
     if o.values.contains_key("--pair") {
         return run_matrix(o, false);
     }
+    if o.values.contains_key("--agent-url") {
+        let mut args = vec!["quick".into()];
+        for (key, value) in &o.values {
+            if ![
+                "--agent-url",
+                "--tx-url",
+                "--rx-url",
+                "--agent-token",
+                "--report",
+                "--html",
+                "--json",
+            ]
+            .contains(&key.as_str())
+            {
+                args.extend([key.clone(), value.clone()]);
+            }
+        }
+        args.extend(o.switches.iter().cloned());
+        let mut remote = o.clone();
+        remote
+            .values
+            .insert("--tx-url".into(), o.required("--agent-url")?.into());
+        let output = endpoint_output(&remote, "--tx-host", &args)?;
+        let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        print!("{text}");
+        if let Some(path) = o.report() {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| e.to_string())?
+                .write_all(text.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return Ok(output.success);
+    }
     let mut ok = inventory(o)?;
     for p in nodes(o)? {
         let i = probe(&p)?;
@@ -1329,7 +1411,7 @@ fn run(o: &Options) -> Result<bool> {
         }
         "serve" => agent::serve(o),
         "list" => inventory(o),
-        "quick" => quick(o),
+        "quick" | "quickcheck" => quick(o),
         "receive" => stream(o, false),
         "transmit" => stream(o, true),
         "loop" => {
@@ -1385,20 +1467,49 @@ fn main() {
                 STDIN_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
             });
         }
-        if o.values.contains_key("--html") && o.cmd != "report" {
-            o.required("--report")?;
+        if let (Some(html), Some(json)) = (o.values.get("--html"), o.values.get("--json")) {
+            if html == json
+                || fs::canonicalize(html)
+                    .ok()
+                    .zip(fs::canonicalize(json).ok())
+                    .is_some_and(|(h, j)| h == j)
+            {
+                return Err("HTML and JSON destinations must differ".into());
+            }
+        }
+        let exports = o.values.contains_key("--html") || o.values.contains_key("--json");
+        if exports && o.cmd != "report" {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(o.required("--report")?)
+                .map_err(|e| e.to_string())?;
         }
         let result = run(&o);
-        if let Some(html) = o.values.get("--html") {
+        if exports {
             let source = if o.cmd == "report" {
                 o.required("--file")?
             } else {
                 o.required("--report")?
             };
             if let Err(error) = &result {
-                emit(Some(source), "FAIL", &o.cmd, error, None)?;
+                if o.cmd != "report" {
+                    emit(Some(source), "FAIL", &o.cmd, error, None)?;
+                }
             }
-            report::write_html(source, html)?;
+            if let Some(json) = o.values.get("--json") {
+                report::write_json(source, json)?;
+            }
+            if let Some(html) = o.values.get("--html") {
+                report::write_html(source, html)?;
+            }
+            if o.cmd == "quickcheck" {
+                eprintln!(
+                    "Reports: {} {}",
+                    o.required("--html")?,
+                    o.required("--json")?
+                );
+            }
         }
         result
     });

@@ -2,13 +2,29 @@
 <!-- SPDX-License-Identifier: MIT -->
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SDI validator report</title><style>
-body{font:15px system-ui,sans-serif;margin:28px;color:#17212b;background:#f6f8fa}h1{font-size:26px}#summary{display:flex;gap:12px;flex-wrap:wrap;margin:20px 0}.count{background:white;border:1px solid #d5dce3;border-radius:6px;padding:12px 18px}.pass{color:#176a37}.fail{color:#ad1824}.skip,.observed{color:#775600}input,select{padding:8px;border:1px solid #bac5cf;border-radius:4px;margin-right:8px}table{width:100%;border-collapse:collapse;background:white;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #d5dce3;vertical-align:top}th{background:#e8edf2}td:first-child{max-width:520px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}details{margin-top:8px}footer{font-size:13px;color:#52606d;margin-top:22px}#log{display:none}
+*{box-sizing:border-box}
+body{font:15px/1.5 system-ui,-apple-system,sans-serif;margin:0;padding:36px;color:#24324a;background:linear-gradient(155deg,#e9efff 0,#f5f7fb 35%,#edf5f3 100%);min-height:100vh}
+body>header,body>main,body>footer{max-width:1600px;margin:auto}
+header{background:linear-gradient(115deg,#152943,#22496b);color:#fff;padding:28px 32px;border-radius:18px;box-shadow:0 12px 32px #15304c18}
+header small{font-size:11px;font-weight:700;letter-spacing:2px;color:#8cd8d3}
+h1{font-size:30px;letter-spacing:-.7px;margin:6px 0}header p{margin:0;color:#c7d7e8}
+#summary{display:flex;gap:14px;flex-wrap:wrap;margin:24px 0 12px}
+.count{background:#fff;border:1px solid #dce3ec;border-top:4px solid currentColor;border-radius:12px;padding:18px 24px;min-width:150px;font-size:20px;font-weight:700;box-shadow:0 5px 18px #22334a08}
+.pass{color:#148357}.fail,.invalid{color:#c13249}.skip,.observed{color:#9a6a10}
+#coverage{color:#5f6d82;margin-bottom:24px}
+.toolbar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;background:#fff;border:1px solid #dce3ec;border-radius:12px;padding:16px 20px}
+label{font-size:13px;font-weight:600;color:#52627a}input,select{font:inherit;padding:9px 12px;border:1px solid #d2dae7;border-radius:7px;margin-left:8px;background:#f9fbfd;color:#24324a}input{min-width:260px}input:focus,select:focus{outline:2px solid #98bcde;outline-offset:2px}
+.table-wrap{overflow:auto;margin-top:20px;border:1px solid #dce3ec;border-radius:12px;background:#fff;box-shadow:0 5px 18px #22334a08}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:14px 16px;border-bottom:1px solid #e7ecf2;vertical-align:top}th{background:#edf2f8;color:#52627a;font-size:11px;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}td:first-child{max-width:520px;overflow-wrap:anywhere}tr:last-child td{border-bottom:0}tbody tr:hover{background:#f7faff}td:nth-child(2){font-weight:700}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;background:#f1f4f9;border-radius:8px;color:#394a60}details{margin-top:8px}summary{cursor:pointer;color:#336eab}footer{font-size:12px;color:#68788d;padding-top:22px}#log{display:none}
+@media(max-width:700px){body{padding:16px}header{padding:22px}h1{font-size:25px}.count{min-width:120px;flex:1;padding:14px 18px}.toolbar{gap:12px}input{min-width:0;width:200px}}
 </style></head><body>
-<h1>SDI validator report</h1><p>Video, audio, ANC, HDR and driver stability</p>
+<header><small>FLUSSONIC · HARDWARE VALIDATION</small><h1>SDI validator report</h1><p>Video, audio, ANC, HDR and driver stability</p></header>
+<main>
 <div id="summary"></div><p id="coverage"></p>
-<label>Result <select id="status"><option value="">All</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
-<label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label>
-<table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio (present / measured)</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table>
+<div class="toolbar"><label>Result <select id="status"><option value="">All</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
+<label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label></div>
+<div class="table-wrap"><table><thead><tr><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio (present / measured)</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table></div></main>
 <footer>PASS applies to the configured checks in that case; disabled checks do not have coverage. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
 <textarea id="log" aria-hidden="true">{{LOG}}</textarea>
 <script>{{SCRIPT}}</script></body></html>

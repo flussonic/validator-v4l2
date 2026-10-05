@@ -212,7 +212,7 @@ fn device(s: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 fn checked_args(command: &str, args: &[String]) -> Result<Option<String>> {
-    if !["transmit", "receive", "software", "plan"].contains(&command) {
+    if !["transmit", "receive", "software", "quick", "plan"].contains(&command) {
         return Err("unsupported agent command".into());
     }
     if args.len() > 64 || args.iter().any(|s| s.len() > 4096) {
@@ -260,6 +260,16 @@ fn checked_args(command: &str, args: &[String]) -> Result<Option<String>> {
             return Err(format!("agent flag forbidden: {flag}"));
         }
     }
+    if command == "quick" {
+        if o.values.contains_key("--pair") {
+            return Err("paired checks must be coordinated by the client".into());
+        }
+        if let Some(path) = o.values.get("--device") {
+            if !device(path) {
+                return Err("agent device must be /dev/videoN".into());
+            }
+        }
+    }
     if command == "plan" {
         let (tx, rx) = crate::pair(&o)?;
         if !device(tx) || !device(rx) {
@@ -305,6 +315,12 @@ impl Server {
         let mut jobs = lock(&self.jobs);
         if jobs.values().filter(|j| lock(&j.done).is_none()).count() >= 16 {
             return Err("active job limit".into());
+        }
+        if jobs
+            .values()
+            .any(|j| lock(&j.done).is_none() && (command == "quick" || j.command == "quick"))
+        {
+            return Err("device busy with another job".into());
         }
         if device.as_ref().is_some_and(|d| {
             jobs.values()
@@ -520,22 +536,13 @@ fn reply(stream: &mut TcpStream, status: u16, body: &str) {
 }
 pub fn serve(o: &Options) -> Result<bool> {
     let listener =
-        TcpListener::bind(o.get("--listen", "127.0.0.1:8787")).map_err(|e| e.to_string())?;
+        TcpListener::bind(o.get("--listen", "0.0.0.0:5040")).map_err(|e| e.to_string())?;
     let token = o
         .values
         .get("--token")
         .cloned()
         .or_else(|| std::env::var("VALIDATOR_HTTP_TOKEN").ok())
         .filter(|t| !t.is_empty());
-    if !listener
-        .local_addr()
-        .map_err(|e| e.to_string())?
-        .ip()
-        .is_loopback()
-        && token.as_ref().map_or(true, |t| t.len() < 16)
-    {
-        return Err("network-facing HTTP agents require a token of at least 16 characters".into());
-    }
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let server = Arc::new(Server {
         jobs: Mutex::new(BTreeMap::new()),

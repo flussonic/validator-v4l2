@@ -64,18 +64,44 @@ checks the whole-run sample count within 0.1% plus a tenth of a frame,
 allows per-frame count jitter and still checks every tone sample and continuity.
 The default checks each frame's sample count within one sample.
 
+For a quick check of all boards on one remote server:
+
+```sh
+# On the server with the boards:
+./validator-v4l2 serve
+# On the workstation:
+./validator-v4l2 quickcheck --agent http://first-server:5040
+# Save a report on the workstation:
+./validator-v4l2 quickcheck --agent http://first-server:5040 --report quick.jsonl --html quick.html
+# Exercise a connected output/input loop on that server:
+./validator-v4l2 quickcheck --agent http://first-server:5040 --pair /dev/video4=/dev/video1 --report loop.jsonl --html loop.html
+```
+
+`quickcheck` automatically saves uniquely named `.html` and `.json` reports
+in the coordinator's current directory, alongside an append-only `.jsonl` log.
+The JSON file is a standard array of result records. `--report PATH` selects
+the log filename; HTML/JSON names are derived from it unless overridden with
+`--html PATH` / `--json PATH`. Failed and interrupted checks also export reports.
+The HTML is self-contained, with status totals, search, filters and per-case
+video/audio/ANC/CRC measurements and error details.
+
+Without `--pair`, the check inventories every board and captures locked inputs;
+output transmission and features requiring a test source remain unverified.
+With `--pair`, the coordinator runs the timing/format/audio/ANC/HDR matrix
+using both endpoints on the specified agent. The workstation needs no boards.
+`quick` remains available as an alias of `quickcheck`.
+
 For distributed testing, start the built-in HTTP agent on each server:
 
 ```sh
-export VALIDATOR_HTTP_TOKEN="same-long-random-token-on-agents-and-coordinator"
-./validator-v4l2 serve --listen 0.0.0.0:8787
+./validator-v4l2 serve
 ```
 
 Run one coordinator on a workstation or either server:
 
 ```sh
-./validator-v4l2 quick --tx-url http://sender:8787 --rx-url http://receiver:8787 --pair /dev/video4=/dev/video1 --report remote.jsonl --html remote.html
-./validator-v4l2 soak --tx-url http://sender:8787 --rx-url http://receiver:8787 --pair /dev/video4=/dev/video1 --duration 86400 --report soak.jsonl --html soak.html
+./validator-v4l2 quick --tx-url http://sender:5040 --rx-url http://receiver:5040 --pair /dev/video4=/dev/video1 --report remote.jsonl --html remote.html
+./validator-v4l2 soak --tx-url http://sender:5040 --rx-url http://receiver:5040 --pair /dev/video4=/dev/video1 --duration 86400 --report soak.jsonl --html soak.html
 ```
 
 The coordinator discovers modes, starts both workers, renews their leases,
