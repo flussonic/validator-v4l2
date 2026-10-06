@@ -1,4 +1,16 @@
 // SPDX-License-Identifier: MIT
+#[test]
+fn absent_video_class_is_an_empty_inventory_for_headless_agents() {
+    let directory = std::env::temp_dir().join(format!(
+        "validator-absent-video-class-{}",
+        std::process::id()
+    ));
+    assert!(!directory.exists());
+    assert_eq!(node_paths(&directory).unwrap(), Vec::<String>::new());
+    std::fs::write(&directory, "not a device directory").unwrap();
+    assert!(node_paths(&directory).is_err());
+    std::fs::remove_file(directory).unwrap();
+}
 use super::*;
 fn geometry(f: &str) -> (Layout, Mode) {
     let l = Layout {

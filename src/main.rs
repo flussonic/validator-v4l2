@@ -315,8 +315,15 @@ fn nodes(o: &Options) -> Result<Vec<String>> {
     if let Some(d) = o.values.get("--device") {
         return Ok(vec![d.clone()]);
     }
-    let mut v = fs::read_dir("/sys/class/video4linux")
-        .map_err(|e| e.to_string())?
+    node_paths(std::path::Path::new("/sys/class/video4linux"))
+}
+fn node_paths(directory: &std::path::Path) -> Result<Vec<String>> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut v = entries
         .filter_map(|e| e.ok())
         .map(|e| format!("/dev/{}", e.file_name().to_string_lossy()))
         .collect::<Vec<_>>();

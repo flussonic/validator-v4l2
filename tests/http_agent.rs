@@ -96,7 +96,8 @@ fn real_agent_executes_validator_and_preserves_results_without_ssh() {
     let (_, jobs) = agent.request("GET", "/v1/jobs", "", None);
     assert!(jobs.array().unwrap().is_empty());
     let id = agent.start_job(
-        r#"{"command":"software","args":["--frames","1"],"lease_secs":15,"run_id":"integration"}"#,
+        // This checks agent execution/results; the software suite covers every format separately.
+        r#"{"command":"software","args":["--frames","1","--format","SDUY"],"lease_secs":15,"run_id":"integration"}"#,
     );
     let result = agent.wait(&id);
     assert_eq!(result.get("exit_code").unwrap().integer().unwrap(), 0);
