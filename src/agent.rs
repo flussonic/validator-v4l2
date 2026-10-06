@@ -255,6 +255,7 @@ fn checked_args(command: &str, args: &[String]) -> Result<Option<String>> {
             "--wire-plan",
             "--stop-on-stdin",
             "--exhaustive",
+            "--asi",
         ]
         .contains(&flag.as_str())
         {

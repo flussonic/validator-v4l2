@@ -533,7 +533,7 @@ fn frozen_counter_text_is_detected_independently_of_picture_marker() {
         buffers[0][range.clone()].copy_from_slice(&old[range]);
     }
     assert_eq!(marker(&buffers[0], l).unwrap(), 1);
-    let e = stats
+    stats
         .frame(
             std::array::from_fn(|i| &buffers[i][..lens[i] as usize]),
             l,
@@ -543,8 +543,13 @@ fn frozen_counter_text_is_detected_independently_of_picture_marker() {
             2,
             Some(&c),
         )
-        .unwrap_err();
-    assert!(e.contains("frame-counter text"));
+        .unwrap();
+    assert!(stats.checks["video pattern"]
+        .errors
+        .iter()
+        .any(|e| e.contains("frame-counter text")));
+    assert_eq!(stats.checks["PCM payload"].failures, 0);
+    assert_eq!(stats.checks["PCM payload"].observations, 2);
 }
 
 #[test]
@@ -715,4 +720,80 @@ fn connection_probe_identity_rejects_other_sources_and_repeated_frames() {
         .observe_probe(&planes[0], layout, generator.probe_id + 1)
         .unwrap();
     assert_eq!(stats.probe_frames, 0, "another output is not this route");
+}
+
+#[test]
+fn staged_suite_starts_with_stereo_then_pcm_eac3_then_anc() {
+    let options = Options::from_args(["quick".into()]).unwrap();
+    let source = Case {
+        mode: "1920x1080p25.000".into(),
+        format: "SDUY".into(),
+        config: Config::default(),
+        memory: "mmap".into(),
+    };
+    let cases = feature_suite(&options, vec![source]).unwrap();
+    assert_eq!(cases[0].config.channels, 2);
+    assert!(!cases[0].config.anc && !cases[0].config.vbi);
+    assert_eq!(
+        cases[1..8]
+            .iter()
+            .map(|case| case.config.channels)
+            .collect::<Vec<_>>(),
+        [4, 6, 8, 10, 12, 14, 16]
+    );
+    assert!(cases[8].config.eac3 && cases[8].config.nonpcm);
+    assert_eq!(cases[8].config.channels, 2);
+    assert!(!cases[8].config.anc);
+    assert!(cases.iter().skip(9).any(|case| case.config.anc));
+    assert!(cases.iter().any(|case| case.config.scte104_fragments));
+    for case in &cases {
+        let restored = parse_plan(&wire_case(case)).unwrap();
+        assert_eq!(wire_case(&restored[0]), wire_case(case));
+    }
+}
+#[test]
+fn bad_channel_does_not_fail_other_channels_or_video_and_disabled_anc_does_not_block_tones() {
+    let (layout, mode) = geometry("SDUY");
+    let config = Config {
+        anc: false,
+        vbi: false,
+        ..Config::default()
+    };
+    let mut generator = Generator::new(config.clone());
+    let mut buffers: [Vec<u8>; 5] = [
+        vec![0; layout.stride as usize * layout.height as usize],
+        vec![0; 262144],
+        vec![0; 262144],
+        vec![0; 128],
+        vec![0; 48960],
+    ];
+    let [a, b, c, d, e] = &mut buffers;
+    let mut lens = generator.fill([a, b, c, d, e], layout, mode).unwrap();
+    // One wrong channel in otherwise intact interleaved PCM.
+    for sample in 0..lens[1] as usize / 64 {
+        put32(&mut buffers[1], sample * 64 + 6 * 4, 0);
+    }
+    buffers[2][0] = 255;
+    lens[2] = 1; // Unrequested ANC must not prevent checking video/stereo.
+    let mut stats = Stats::default();
+    stats.expect_checks(Some(&config), mode, false);
+    stats
+        .frame(
+            std::array::from_fn(|i| &buffers[i][..lens[i] as usize]),
+            layout,
+            mode,
+            0,
+            0,
+            1,
+            Some(&config),
+        )
+        .unwrap();
+    stats.finish(Some(&config));
+    assert_eq!(stats.checks["video pattern"].failures, 0);
+    assert_eq!(stats.checks["PCM channel 1"].failures, 0);
+    assert_eq!(stats.checks["PCM channel 2"].failures, 0);
+    assert!(stats.checks["PCM channel 7"].failures > 0);
+    assert_eq!(stats.checks["PCM channel 16"].failures, 0);
+    assert_eq!(stats.checks["ANC structure"].observations, 0);
+    assert_eq!(stats.checks["ANC structure"].failures, 0);
 }

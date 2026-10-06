@@ -5,6 +5,15 @@ Flussonic's DeckLink, AJA, DekTec, Stream Labs, AVMatrix and Magewell drivers.
 MIT application, bundled original `include/sdi_av.h` with its syscall exception.
 No vendor SDK, Rust crate downloads or FFmpeg are needed.
 
+
+Default SDI matrices run in feature order: picture plus two PCM channels with ANC/VBI disabled; PCM channel counts 4, 6, 8, 10, 12, 14 and 16; real E-AC-3 5.1 on slots 1–2; ST 337M; ANC families and fragmented SCTE-104; SD VBI, HDR/Level A/B and buffer/metadata variations. The picture/stereo and ANC phases retain the selected timing/format matrix. Feature variations use a representative 1080p25 timing when available. Explicit payload/channel/flag selections remain focused runs.
+
+PCM results name each channel independently. A corrupt channel 7 does not fail channels 1–2. ATC is `60/60`; SCTE-104 is `41/07` (hex DID/SDID). ANC diagnostics distinguish an absent packet, a present packet with unexpected frame-associated payload, and a malformed ANC plane. Reports order these phases, label each ANC family and show the failure reason alongside the result. Disabled ancillary checks do not block picture/tone validation.
+
+Each worker emits a structured `checks` array with independent results and measurements, including separate ANC families. Errors in one feature do not change another feature’s result. Unavailable, disabled or unreached checks are SKIP with reasons. Worker/global failure exit codes are retained for automation, while report route headers show counts only. Legacy logs lack complete per-feature evidence and remain explicitly labelled combined scenarios.
+
+ASI nodes are discovered separately using single-plane MPEG buffers. `loop --asi --pair /dev/video11=/dev/video5 --tx-url http://sender:5040 --rx-url http://receiver:5040` checks known 188-byte TS packets, payload identity and continuity across buffer boundaries. ASI currently supports MMAP only; 204-byte RS packets, rate accuracy and electrical compliance are not certified. ASI has no SDI video/audio/ANC plane contract.
+
 `--scte104-fragments` selects a 287-byte multi-operation SCTE-104 message:
 a splice request plus 63 avail identifiers, carried in two ST 2010 ANC
 packets on consecutive VANC lines. Use the option on `transmit`, expected
@@ -81,7 +90,7 @@ For a quick check of all boards on one remote server:
 in the coordinator's current directory, alongside an append-only `.jsonl` log.
 The JSON file is a standard array of result records. Each hardware result
 includes `boards` with the board name, driver, PCI bus, device node and agent.
-The HTML shows board names in the case table and connection map. `--report PATH` selects
+The HTML groups independent checks by directed route, showing PASS/FAIL/SKIP counts and expandable scenarios. A route has no aggregate working/broken verdict. Connection discovery evidence lives inside the first scenario details, not a result row. `--report PATH` selects
 the log filename; HTML/JSON names are derived from it unless overridden with
 `--html PATH` / `--json PATH`. Failed and interrupted checks also export reports.
 The HTML is self-contained, with status totals, search, filters and per-case
@@ -91,9 +100,14 @@ Without `--pair`, `quickcheck` automatically inventories every board on the
 agent and on the local Linux coordinator, sends uniquely identified video
 probes through each compatible output/input candidate, and discovers local
 loops and connections between hosts in both directions. It then runs the
-video/audio/ANC/HDR matrix on every discovered route. Capture evidence proves
+video/audio/ANC/HDR matrix on one representative per equivalent directed pair of physical boards and advertised capabilities. SDI and ASI have separate representatives. Extra cables appear in a separate report group; add `--all-routes` to test every cable. Only executed scenario statuses are compared; an untested cable never inherits a representative PASS or an identical-report claim. Capture evidence proves
 the connection even when PCM or CRC validation fails; those features are
 checked separately in the matrix and remain failures.
+
+Use `--nodes /dev/video0,/dev/video4,...` to restrict discovery and matrices
+to selected ports; `--cross-board` excludes loops within the same physical board.
+The inventory still records all boards. Reports state whether UHD/DCI 4K
+scenarios are present and explain absent 4K coverage from advertised capabilities.
 
 For a coordinator without boards, add a second agent with
 `--peer-agent http://second-server:5040`. Both servers must run the current

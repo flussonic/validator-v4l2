@@ -7,8 +7,13 @@ format, all formats at representative HD/4K modes, and feature variations.
 `--exhaustive` and endurance mode cover every timing/format combination.
 The receiver must support the selected mode/format too.
 
+Reports preserve independent check results per scenario and group them by directed route. A failed ANC family does not mark PCM or the route as failed. Extra equivalent cables are excluded from the default matrix and shown separately; `--all-routes` enables their matrices and comparison of scenario statuses. Legacy logs do not provide sufficient evidence to reconstruct per-feature passes.
+
+The default suite first verifies video/stereo without ANC/VBI, then additional PCM channels with per-channel results, then E-AC-3 and ancillary/parameter tests. Both basic and ANC phases retain advertised timing/format coverage. Human-readable rows include the concrete error, rather than assigning a blanket failure to the entire video mode.
+
 Implemented checks:
 
+- Single-plane ASI MPEG-TS with generated 188-byte packets, exact payload/identity and packet continuity across V4L2 buffers. MMAP only; 204-byte RS transport and bitrate/electrical certification are not covered.
 - Five-plane ABI and metadata v4, lengths, reserved fields, vendor-tail bounds.
 - SD, HD, 3G, 6G and 12G modes that the driver enumerates, including fractional
   rates, interlaced audio field counts, picture marker continuity and PTS band.

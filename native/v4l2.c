@@ -21,14 +21,14 @@ struct info { char driver[16], card[32], bus[32]; uint32_t caps, output; };
 struct mode { uint32_t width,height,interlaced,total_lines; uint64_t num,den; uint32_t index,reduced; };
 struct layout { uint32_t width,height,fourcc,stride,sizes[5]; };
 struct frame { uint32_t index,sequence,flags,events; uint64_t timestamp; uint8_t *data[5]; uint32_t len[5]; };
-struct device { int fd; unsigned type,memory,count,on; void *map[BUFS][5]; size_t len[BUFS][5]; struct layout layout; int dma_fd[BUFS][5]; unsigned cpu[BUFS][5]; };
+struct device { int fd; unsigned type,memory,count,on,single; void *map[BUFS][5]; size_t len[BUFS][5]; struct layout layout; int dma_fd[BUFS][5]; unsigned cpu[BUFS][5]; };
 static int call(int fd,unsigned long r,void *p) { int v; do { v=ioctl(fd,r,p); } while(v<0 && errno==EINTR); return v<0?-errno:v; }
 int vv_probe(const char *path,struct info *i) {
  int fd=open(path,O_RDWR|O_NONBLOCK|O_CLOEXEC); if(fd<0)return -errno;
  struct v4l2_capability c={0}; int r=call(fd,VIDIOC_QUERYCAP,&c); close(fd); if(r<0)return r;
  memset(i,0,sizeof(*i)); memcpy(i->driver,c.driver,16); memcpy(i->card,c.card,32); memcpy(i->bus,c.bus_info,32);
  i->caps=c.capabilities & V4L2_CAP_DEVICE_CAPS ? c.device_caps:c.capabilities;
- i->output=!!(i->caps & V4L2_CAP_VIDEO_OUTPUT_MPLANE); return 0;
+ i->output=!!(i->caps & (V4L2_CAP_VIDEO_OUTPUT_MPLANE|V4L2_CAP_VIDEO_OUTPUT)); return 0;
 }
 static void mode_of(const struct v4l2_dv_timings *t,struct mode *m) {
  const struct v4l2_bt_timings *b=&t->bt; m->width=b->width; m->height=b->height; m->interlaced=b->interlaced;
@@ -96,6 +96,26 @@ int vv_open(const char *path,unsigned output,int index,unsigned reduced,uint32_t
  *result=d; return (int)d->count;
  fail: vv_close(d);return r;
 }
+/* ASI is single-plane MPEG-TS, independent of the five-plane SDI ABI. */
+int vv_asi_open(const char *path,unsigned output,struct device **result,struct layout *l) {
+ *result=NULL;struct device *d=calloc(1,sizeof(*d));if(!d)return -ENOMEM;
+ for(unsigned i=0;i<BUFS;i++)for(unsigned p=0;p<5;p++)d->dma_fd[i][p]=-1;
+ d->single=1;d->type=output?V4L2_BUF_TYPE_VIDEO_OUTPUT:V4L2_BUF_TYPE_VIDEO_CAPTURE;d->memory=V4L2_MEMORY_MMAP;
+ d->fd=open(path,O_RDWR|O_NONBLOCK|O_CLOEXEC);int r=-errno;if(d->fd<0)goto fail;
+ struct v4l2_format f={.type=d->type};r=call(d->fd,VIDIOC_G_FMT,&f);if(r<0)goto fail;
+ f.fmt.pix.pixelformat=V4L2_PIX_FMT_MPEG;r=call(d->fd,VIDIOC_S_FMT,&f);if(r<0)goto fail;
+ if(f.fmt.pix.pixelformat!=V4L2_PIX_FMT_MPEG || !f.fmt.pix.sizeimage){r=-EPROTO;goto fail;}
+ memset(l,0,sizeof(*l));l->fourcc=V4L2_PIX_FMT_MPEG;l->sizes[0]=f.fmt.pix.sizeimage;
+ struct v4l2_requestbuffers req={.count=REQUEST_BUFS,.type=d->type,.memory=d->memory};r=call(d->fd,VIDIOC_REQBUFS,&req);if(r<0)goto fail;
+ if(!req.count || req.count>BUFS){r=-EPROTO;goto fail;}d->count=req.count;
+ for(unsigned i=0;i<d->count;i++){
+  struct v4l2_buffer b={.index=i,.type=d->type,.memory=d->memory};r=call(d->fd,VIDIOC_QUERYBUF,&b);if(r<0)goto fail;
+  if(!b.length || b.length>64*1024*1024){r=-EPROTO;goto fail;}d->len[i][0]=b.length;
+  void *v=mmap(NULL,b.length,PROT_READ|PROT_WRITE,MAP_SHARED,d->fd,b.m.offset);if(v==MAP_FAILED){r=-errno;goto fail;}d->map[i][0]=v;
+ }
+ *result=d;return (int)d->count;
+ fail:vv_close(d);return r;
+}
 int vv_buffer(struct device *d,unsigned index,struct frame *f) {
  if(index>=d->count)return -EINVAL;
  memset(f,0,sizeof(*f));f->index=index;
@@ -103,14 +123,16 @@ int vv_buffer(struct device *d,unsigned index,struct frame *f) {
 }
 int vv_queue(struct device *d,const struct frame *f) {
  if(f->index>=d->count)return -EINVAL;
+ if(d->single){if(f->len[0]>d->len[f->index][0])return -EOVERFLOW;struct v4l2_buffer b={.index=f->index,.type=d->type,.memory=d->memory,.bytesused=f->len[0]};return call(d->fd,VIDIOC_QBUF,&b);}
  struct v4l2_plane p[5]={0};struct v4l2_buffer b={.index=f->index,.type=d->type,.memory=d->memory,.length=5,.m.planes=p};
  for(unsigned j=0;j<5;j++){if(f->len[j]>d->len[f->index][j])return -EOVERFLOW;p[j].length=d->len[f->index][j];p[j].bytesused=f->len[j];if(d->memory==V4L2_MEMORY_USERPTR)p[j].m.userptr=(unsigned long)d->map[f->index][j];if(d->memory==V4L2_MEMORY_DMABUF){p[j].m.fd=d->dma_fd[f->index][j];struct dma_buf_sync sync={.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_RW};if(d->cpu[f->index][j]){int r=call(p[j].m.fd,DMA_BUF_IOCTL_SYNC,&sync);if(r<0)return r;d->cpu[f->index][j]=0;}}}
  return call(d->fd,VIDIOC_QBUF,&b);
 }
 int vv_start(struct device *d) {int r=call(d->fd,VIDIOC_STREAMON,&d->type);if(r>=0)d->on=1;return r;}
 int vv_next(struct device *d,unsigned timeout,struct frame *f) {
- struct pollfd pfd={.fd=d->fd,.events=(d->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE?POLLOUT:POLLIN)|POLLPRI};
+ struct pollfd pfd={.fd=d->fd,.events=((d->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || d->type==V4L2_BUF_TYPE_VIDEO_OUTPUT)?POLLOUT:POLLIN)|POLLPRI};
  struct v4l2_plane p[5]={0};struct v4l2_buffer b={.type=d->type,.memory=d->memory,.length=5,.m.planes=p};
+ if(d->single){b.length=0;b.m.offset=0;}
  struct timespec now;if(clock_gettime(CLOCK_MONOTONIC,&now)<0)return -errno;
  uint64_t deadline=(uint64_t)now.tv_sec*1000+now.tv_nsec/1000000+timeout;
  unsigned events=0;int r;
@@ -130,8 +152,9 @@ int vv_next(struct device *d,unsigned timeout,struct frame *f) {
   if(r<0)return r;
   break;
  }
- if(b.index>=d->count || b.length!=5)return -EPROTO;
+ if(b.index>=d->count || (!d->single && b.length!=5))return -EPROTO;
  r=vv_buffer(d,b.index,f);if(r<0)return r;f->sequence=b.sequence;f->flags=b.flags;f->events=events;f->timestamp=(uint64_t)b.timestamp.tv_sec*1000000000+(uint64_t)b.timestamp.tv_usec*1000;
+ if(d->single){if(b.bytesused>d->len[b.index][0])return -EPROTO;f->len[0]=b.bytesused;return 0;}
  for(unsigned j=0;j<5;j++) {if(p[j].bytesused>d->len[b.index][j] || p[j].data_offset>p[j].bytesused)return -EPROTO;f->data[j]=(uint8_t *)d->map[b.index][j]+p[j].data_offset;f->len[j]=p[j].bytesused-p[j].data_offset;}
  return 0;
 }

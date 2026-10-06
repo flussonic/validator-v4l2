@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 mod agent;
 mod artifacts;
+mod asi;
 mod device;
 mod discovery;
 mod eac3;
@@ -77,6 +78,10 @@ Options:
   --seed N            reproducible randomized soak order (default 1)
   --tx-url URL --rx-url URL  HTTP agent endpoints (omitted = local Linux)
   --agent URL          run checks on one HTTP agent (both sides of a local loop)
+  --asi                single-plane ASI MPEG-TS transport (188-byte packets)
+  --all-routes         run matrices on equivalent cables too (default: one representative)
+  --nodes PATH,...     limit automatic discovery to these device nodes
+  --cross-board       discover connections between different boards only
   --peer-agent URL     additional server for automatic connection discovery
   --inventory-only    inventory/locked inputs without transmitting discovery probes
   --discover-only     find connections without running the full matrix
@@ -132,12 +137,16 @@ impl Options {
                 "--scte104-fragments",
                 "--inventory-only",
                 "--discover-only",
+                "--all-routes",
+                "--cross-board",
+                "--asi",
             ]
             .contains(&k.as_str())
             {
                 switches.push(k);
             } else if [
                 "--device",
+                "--nodes",
                 "--pair",
                 "--frames",
                 "--warmup",
@@ -404,6 +413,9 @@ fn inventory(o: &Options) -> Result<bool> {
     for p in nodes(o)? {
         let result = (|| -> Result<(&str, String)> {
             let i = probe(&p)?;
+            if i.asi() {
+                return Ok(("INFO", format!("driver={} card={} bus={} direction={} formats=MPEG timings=ASI transport=ASI", text(&i.driver), text(&i.card), text(&i.bus), if i.output != 0 { "output" } else { "capture" })));
+            }
             if !i.multiplanar() {
                 return Ok(("SKIP", format!(
                     "driver={} card={} caps=0x{:08x}: no multiplanar video capability; outside the five-plane SDI contract",
@@ -532,7 +544,15 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     let i = probe(p)?;
     let board = report::device_board(&i, p);
     if (i.output != 0) != output || i.caps & (if output { 0x2000 } else { 0x1000 }) == 0 {
-        return Err("node direction/common mplane capability mismatch".into());
+        report::emit_with_boards(
+            o.report(),
+            "SKIP",
+            p,
+            "Requested SDI direction is not advertised by this node",
+            None,
+            &[board],
+        )?;
+        return Ok(true);
     }
     let c = o.config()?;
     let mut defaults = c.clone();
@@ -582,9 +602,11 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     }
     d.start()?;
     let mut baseline = attrs(p);
+    stats.crc_supported = baseline.contains_key("crc_errors");
     let warmup = if output { 0 } else { o.u32("--warmup", 0)? };
     let mut discarded = 0;
     let expect = if o.has("--expect") { Some(&c) } else { None };
+    stats.expect_checks(expect, d.mode, output);
     while stats.frames < frames
         && (duration == 0 || started.elapsed() < Duration::from_secs(duration))
         && !stop_requested()
@@ -616,6 +638,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
                 }
             }
             last_output_seq = Some(f.sequence);
+            stats.checked("stream continuity");
             let slow = o.number("--slow-ms", 0)?;
             if slow != 0 {
                 std::thread::sleep(Duration::from_millis(slow));
@@ -665,6 +688,7 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
         }
     }
     let after = attrs(p);
+    let mut measured_counters = false;
     for key in [
         "frames_skipped",
         "crc_errors",
@@ -676,11 +700,15 @@ fn stream(o: &Options, output: bool) -> Result<bool> {
     ] {
         if let (Some(a), Some(b)) = (baseline.get(key), after.get(key)) {
             if let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) {
+                measured_counters = true;
                 if b > a {
                     stats.fail(format!("sysfs {key} increased by {}", b - a));
                 }
             }
         }
+    }
+    if measured_counters {
+        stats.checked("driver counters");
     }
     stats.finish(if output { None } else { expect });
     let status = if stats.failure_count != 0 {
@@ -714,6 +742,14 @@ struct Case {
     memory: String,
 }
 fn matrix(o: &Options, p: &str) -> Result<Vec<Case>> {
+    if o.has("--asi") {
+        return Ok(vec![Case {
+            mode: "ASI".into(),
+            format: "MPEG".into(),
+            config: o.config()?,
+            memory: o.get("--memory", "mmap").into(),
+        }]);
+    }
     let ms = if o.values.contains_key("--mode") {
         vec![selected(p, o.get("--mode", ""))?]
     } else {
@@ -750,48 +786,104 @@ fn matrix(o: &Options, p: &str) -> Result<Vec<Case>> {
             });
         }
     }
-    if !o.values.contains_key("--mode") {
-        if let Some(base) = cases
+    feature_suite(o, cases)
+}
+
+// Keep the baseline independent of ancillary features. An explicitly selected
+// payload/flag combination remains a focused scenario rather than a full suite.
+fn feature_suite(o: &Options, mut cases: Vec<Case>) -> Result<Vec<Case>> {
+    let focused = ["--channels", "--flags", "--alternate", "--pad"]
+        .iter()
+        .any(|key| o.values.contains_key(*key))
+        || ["--nonpcm", "--eac3", "--no-meta", "--scte104-fragments"]
             .iter()
-            .find(|c| c.mode.contains("1080p50."))
-            .or(cases.first())
+            .any(|key| o.has(key));
+    if focused {
+        return Ok(cases);
+    }
+    for case in &mut cases {
+        case.config.channels = 2;
+        case.config.anc = false;
+        case.config.vbi = false;
+    }
+    let Some(base) = cases
+        .iter()
+        .find(|case| case.mode.contains("1080p25.") && case.format == "SDUY")
+        .or_else(|| cases.iter().find(|case| case.mode.contains("1080p25.")))
+        .or(cases.first())
+        .cloned()
+    else {
+        return Ok(cases);
+    };
+    for channels in [4, 6, 8, 10, 12, 14, 16] {
+        let mut case = base.clone();
+        case.config.channels = channels;
+        cases.push(case);
+    }
+    let mut encoded = base.clone();
+    encoded.config.nonpcm = true;
+    encoded.config.eac3 = true;
+    cases.push(encoded);
+    let mut transport = base.clone();
+    transport.config.nonpcm = true;
+    cases.push(transport);
+    if !o.has("--no-anc") {
+        let ancillary_cases: Vec<_> = cases
+            .iter()
+            .filter(|case| case.config.channels == 2 && !case.config.nonpcm)
+            .cloned()
+            .map(|mut case| {
+                case.config.anc = true;
+                case
+            })
+            .collect();
+        cases.extend(ancillary_cases);
+        let mut fragmented = base.clone();
+        fragmented.config.anc = true;
+        fragmented.config.scte104_fragments = true;
+        cases.push(fragmented);
+    }
+    if !o.has("--no-vbi") {
+        if let Some(sd) = cases
+            .iter()
+            .find(|case| case.mode.starts_with("720x576i") || case.mode.starts_with("720x486i"))
             .cloned()
         {
-            for flags in [1, 8 | 16, 8 | 32, 1 | 8 | 16] {
-                let mut c = base.clone();
-                c.config.flags = flags;
-                c.config.alternate = 25;
-                cases.push(c);
-            }
-            for channels in [2, 8] {
-                let mut c = base.clone();
-                c.config.channels = channels;
-                cases.push(c);
-            }
-            let mut c = base.clone();
-            c.memory = "userptr".into();
-            cases.push(c);
-            let mut c = base.clone();
-            c.memory = "dmabuf".into();
-            cases.push(c);
-            let mut c = base.clone();
-            c.config.pad = 32;
-            cases.push(c);
-            let mut c = base.clone();
-            c.config.no_meta = true;
-            cases.push(c);
-            let mut c = base.clone();
-            c.config.nonpcm = true;
-            cases.push(c);
-            let mut c = base;
-            c.config.nonpcm = true;
-            c.config.eac3 = true;
-            cases.push(c);
+            let mut case = sd;
+            case.config.vbi = true;
+            cases.push(case);
         }
     }
+    let hdr_base = cases
+        .iter()
+        .find(|case| case.mode.contains("1080p50.") && case.format == "SDUY")
+        .or_else(|| cases.iter().find(|case| case.mode.contains("1080p50.")))
+        .unwrap_or(&base)
+        .clone();
+    for flags in [1, 8 | 16, 8 | 32, 1 | 8 | 16] {
+        let mut case = hdr_base.clone();
+        case.config.flags = flags;
+        case.config.alternate = 25;
+        cases.push(case);
+    }
+    for memory in ["userptr", "dmabuf"] {
+        let mut case = base.clone();
+        case.memory = memory.into();
+        cases.push(case);
+    }
+    let mut padding = base.clone();
+    padding.config.pad = 32;
+    cases.push(padding);
+    let mut missing_meta = base;
+    missing_meta.config.no_meta = true;
+    cases.push(missing_meta);
     Ok(cases)
 }
+
 fn case_args(case: &Case) -> Vec<String> {
+    if case.mode == "ASI" {
+        return vec!["--asi".into(), "--memory".into(), case.memory.clone()];
+    }
     let c = &case.config;
     let mut a = vec![
         "--mode".into(),
@@ -982,6 +1074,23 @@ fn pair(o: &Options) -> Result<(&str, &str)> {
 }
 fn one_pair(o: &Options, case: &Case) -> Result<bool> {
     let (tx, rx) = pair(o)?;
+    if let Some(reason) = discovery::pair_unavailable(o, case)? {
+        report::emit(
+            o.report(),
+            "SKIP",
+            &format!(
+                "{} {} -> {} {} {:?}",
+                o.get("--tx-url", "local"),
+                tx,
+                o.get("--rx-url", "local"),
+                rx,
+                case
+            ),
+            &reason,
+            None,
+        )?;
+        return Ok(true);
+    }
     let mut ta = vec![
         "transmit".into(),
         "--device".into(),
@@ -1052,6 +1161,8 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    let skipped =
+        report::worker_skipped(&transmitted.stdout) || report::worker_skipped(&received.stdout);
     let ok = transmitted.success && received.success;
     let detail = format!(
         "tx: {} {} rx: {} {}",
@@ -1067,7 +1178,13 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
     ));
     report::emit_with_boards(
         o.report(),
-        if ok { "PASS" } else { "FAIL" },
+        if skipped {
+            "SKIP"
+        } else if ok {
+            "PASS"
+        } else {
+            "FAIL"
+        },
         &format!(
             "{} {} -> {} {} {:?}",
             o.get("--tx-url", "local"),
@@ -1080,7 +1197,7 @@ fn one_pair(o: &Options, case: &Case) -> Result<bool> {
         None,
         &boards,
     )?;
-    Ok(ok)
+    Ok(ok || skipped)
 }
 fn quick(o: &Options) -> Result<bool> {
     if o.values.contains_key("--pair") {
@@ -1177,7 +1294,7 @@ fn quick(o: &Options) -> Result<bool> {
 fn wire_case(c: &Case) -> String {
     let v = &c.config;
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         c.mode,
         c.format,
         v.flags,
@@ -1189,14 +1306,15 @@ fn wire_case(c: &Case) -> String {
         v.anc as u8,
         v.vbi as u8,
         c.memory,
-        v.eac3 as u8
+        v.eac3 as u8,
+        v.scte104_fragments as u8
     )
 }
 fn parse_plan(text: &str) -> Result<Vec<Case>> {
     let mut cases = vec![];
     for line in text.lines() {
         let p: Vec<_> = line.split('\t').collect();
-        if p.len() != 12 {
+        if ![12, 13].contains(&p.len()) {
             return Err("malformed remote plan".into());
         }
         let n = |i: usize| {
@@ -1212,7 +1330,7 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
             nonpcm: n(7)? != 0,
             eac3: n(11)? != 0,
             anc: n(8)? != 0,
-            scte104_fragments: false,
+            scte104_fragments: p.len() == 13 && n(12)? != 0,
             vbi: n(9)? != 0,
         };
         if !(1..=16).contains(&c.channels)
@@ -1222,6 +1340,7 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
             || (c.nonpcm && c.channels < 2)
             || (c.eac3 && !c.nonpcm)
             || !["mmap", "userptr", "dmabuf"].contains(&p[10])
+            || (p.len() == 13 && n(12)? > 1)
             || !FORMATS.contains(&p[1])
         {
             return Err("invalid remote plan case".into());
@@ -1239,6 +1358,9 @@ fn parse_plan(text: &str) -> Result<Vec<Case>> {
     Ok(cases)
 }
 fn planned_cases(o: &Options, tx: &str) -> Result<Vec<Case>> {
+    if o.has("--asi") {
+        return matrix(o, tx);
+    }
     let cases = if o.values.contains_key("--tx-host") || o.values.contains_key("--tx-url") {
         let mut args = vec![
             "plan".into(),
@@ -1269,6 +1391,7 @@ fn planned_cases(o: &Options, tx: &str) -> Result<Vec<Case>> {
             "--nonpcm",
             "--eac3",
             "--no-meta",
+            "--scte104-fragments",
             "--exhaustive",
         ] {
             if o.has(key) {
@@ -1409,6 +1532,7 @@ fn software(o: &Options) -> Result<bool> {
             c.alternate = 3;
             let mut gen = Generator::new(c.clone());
             let mut stats = Stats::default();
+            stats.expect_checks(Some(&c), m, false);
             for seq in 0..frames {
                 let lens = gen.fill(
                     {
@@ -1468,12 +1592,32 @@ fn run(o: &Options) -> Result<bool> {
             println!("{}", discovery::topology()?.encode());
             Ok(true)
         }
-        "receive" => stream(o, false),
-        "transmit" => stream(o, true),
+        "receive" => {
+            if o.has("--asi") {
+                asi::stream(o, false)
+            } else {
+                stream(o, false)
+            }
+        }
+        "transmit" => {
+            if o.has("--asi") {
+                asi::stream(o, true)
+            } else {
+                stream(o, true)
+            }
+        }
         "loop" => {
             let c = Case {
-                mode: o.get("--mode", "1080p25").into(),
-                format: o.get("--format", "SDUY").into(),
+                mode: if o.has("--asi") {
+                    "ASI".into()
+                } else {
+                    o.get("--mode", "1080p25").into()
+                },
+                format: if o.has("--asi") {
+                    "MPEG".into()
+                } else {
+                    o.get("--format", "SDUY").into()
+                },
                 config: o.config()?,
                 memory: o.get("--memory", "mmap").into(),
             };
@@ -1498,7 +1642,7 @@ fn run(o: &Options) -> Result<bool> {
                         o.report(),
                         "PLAN",
                         &format!("{c:?}"),
-                        "physical loop or two-server SDI connection required",
+                        "physical loop or two-server SDI/ASI connection required",
                         None,
                     )?;
                 }

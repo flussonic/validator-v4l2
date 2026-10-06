@@ -29,4 +29,5 @@ jobs:
           fi
           exit "$test_status"
       - run: make check
+      - run: node --test tests/report.test.cjs
       - run: ./validator-v4l2 software --frames 4

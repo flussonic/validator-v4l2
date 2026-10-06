@@ -42,12 +42,23 @@ fn pcm_phase_offsets(
 }
 
 #[derive(Default)]
+pub struct CheckResult {
+    pub observations: u64,
+    pub failures: u64,
+    pub errors: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Default)]
 pub struct Stats {
+    pub checks: BTreeMap<String, CheckResult>,
+    context: String,
     pub probe_frames: u64,
     last_probe: Option<u64>,
     pub windowed_audio: bool,
     pub frames: u64,
     pub crc_errors: u64,
+    pub crc_supported: bool,
     pub gaps: u64,
     pub errors: Vec<String>,
     pub failure_count: u64,
@@ -69,8 +80,92 @@ pub struct Stats {
     picture: Option<crate::sapsan::Picture>,
     encoded_phase: Option<u64>,
     expected_audio: f64,
+    channel_observations: [u64; 16],
 }
 impl Stats {
+    pub fn context(&mut self, name: &str) {
+        self.context = name.into();
+    }
+    pub fn checked(&mut self, name: &str) {
+        self.checks.entry(name.into()).or_default().observations += 1;
+    }
+    pub fn skip_check(&mut self, name: &str, reason: &str) {
+        self.checks.entry(name.into()).or_default().reason = reason.into();
+    }
+    pub fn expect_checks(&mut self, config: Option<&Config>, mode: Mode, output: bool) {
+        for name in ["stream continuity", "driver counters"] {
+            self.skip_check(name, "No completed measurements");
+        }
+        if output {
+            return;
+        }
+        for name in [
+            "five-plane ABI",
+            "CRC",
+            "audio metadata/cadence",
+            "ANC structure",
+        ] {
+            self.skip_check(name, "Not reached; inspect stream errors");
+        }
+        for name in [
+            "video pattern",
+            "HDR/level metadata",
+            "PCM payload",
+            "encoded audio",
+            "encoded audio metadata",
+            "SD VBI",
+        ] {
+            self.skip_check(name, "Not reached; inspect stream errors");
+        }
+        self.skip_check("CRC", "CRC measurement support is unknown; a zero metadata field does not certify hardware CRC");
+        if let Some(c) = config {
+            let begin = if c.nonpcm { 2 } else { 0 };
+            for channel in begin..c.channels {
+                self.skip_check(
+                    &format!("PCM channel {}", channel + 1),
+                    "No tone samples checked for this channel",
+                );
+            }
+            if c.nonpcm && c.channels <= 2 {
+                self.skip_check(
+                    "PCM payload",
+                    "Encoded two-slot carrier; no PCM channels requested",
+                );
+            }
+            if !c.nonpcm {
+                self.skip_check("encoded audio", "PCM scenario");
+                self.skip_check("encoded audio metadata", "PCM scenario");
+            }
+            if !c.anc {
+                self.skip_check("ANC structure", "ANC fixture checks disabled");
+            }
+            if !c.vbi {
+                self.skip_check("SD VBI", "VBI waveform checks disabled");
+            } else if ![525, 625].contains(&mode.total_lines) {
+                self.skip_check("SD VBI", "VBI is unavailable for non-SD timing");
+            }
+            for packet in fixture_packets(0, mode, c.scte104_fragments) {
+                self.skip_check(
+                    &format!("ANC {:02x}/{:02x}", packet.did, packet.sdid),
+                    if c.anc {
+                        "Not reached; no associated picture"
+                    } else {
+                        "ANC fixture checks disabled"
+                    },
+                );
+            }
+        } else {
+            for name in [
+                "video pattern",
+                "HDR/level metadata",
+                "PCM payload",
+                "encoded audio",
+                "SD VBI",
+            ] {
+                self.skip_check(name, "No known generated source");
+            }
+        }
+    }
     pub fn observe_probe(&mut self, picture: &[u8], layout: Layout, id: u32) -> Result<()> {
         let frame = match marker(picture, layout) {
             Ok(frame) => frame,
@@ -93,12 +188,65 @@ impl Stats {
         Ok(())
     }
 
-    pub fn fail(&mut self, msg: impl Into<String>) {
+    pub fn fail_check(&mut self, name: &str, msg: impl Into<String>) {
+        let msg = msg.into();
+        let result = self.checks.entry(name.into()).or_default();
+        result.failures += 1;
+        if result.errors.len() < 20 {
+            result.errors.push(msg.clone());
+        }
         self.failure_count += 1;
         if self.errors.len() < 20 {
-            self.errors.push(msg.into());
+            self.errors.push(msg);
         }
     }
+    pub fn fail(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        let name = if let Some(rest) = msg.strip_prefix("missing/corrupt ANC ") {
+            format!(
+                "ANC {}",
+                rest.split_whitespace().next().unwrap_or("payload")
+            )
+        } else if msg.contains("sysfs ") {
+            "driver counters".into()
+        } else if msg.contains("HDR/level") || msg.contains("HLG and PQ") {
+            "HDR/level metadata".into()
+        } else if msg.contains("CRC") {
+            "CRC".into()
+        } else if msg.contains("VBI") || msg.contains("teletext") {
+            "SD VBI".into()
+        } else if msg.contains("SMPTE 337") || msg.contains("E-AC-3") {
+            "encoded audio".into()
+        } else if msg.contains("PCM") || msg.contains("unexpected audio") {
+            "PCM payload".into()
+        } else if msg.contains("audio") {
+            "audio metadata/cadence".into()
+        } else if msg.contains("sequence")
+            || msg.contains("timestamp")
+            || msg.contains("BUF_FLAG")
+            || msg.contains("no frames")
+        {
+            "stream continuity".into()
+        } else if msg.contains("marker") || msg.contains("video mismatch") || msg.contains("Sapsan")
+        {
+            "video pattern".into()
+        } else if msg.contains("ANC") {
+            "ANC structure".into()
+        } else if msg.contains("metadata") || msg.contains("plane") {
+            "five-plane ABI".into()
+        } else {
+            self.context.clone()
+        };
+        self.fail_check(
+            if name.is_empty() {
+                "stream operation"
+            } else {
+                &name
+            },
+            msg,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn frame(
         &mut self,
@@ -111,6 +259,7 @@ impl Stats {
         expect: Option<&Config>,
     ) -> Result<()> {
         self.frames += 1;
+        self.context("stream continuity");
         if flags & 0x40 != 0 {
             self.fail("V4L2_BUF_FLAG_ERROR");
         }
@@ -129,6 +278,8 @@ impl Stats {
             }
         }
         self.last_time = Some(time);
+        self.checked("stream continuity");
+        self.context("five-plane ABI");
         if p[0].len() < l.stride as usize * l.height as usize {
             return Err("short video plane".into());
         }
@@ -150,6 +301,7 @@ impl Stats {
             }
         }
         let mf = get32(meta, 8)?;
+        self.checked("five-plane ABI");
         self.flags |= mf;
         if mf & 48 == 48 {
             self.fail("HLG and PQ both set");
@@ -158,6 +310,9 @@ impl Stats {
         self.crc_errors = self.crc_errors.saturating_add(u64::from(crc));
         if crc != 0 {
             self.fail("frame CRC errors");
+        }
+        if crc != 0 || self.crc_supported {
+            self.checked("CRC");
         }
         let hw = u64::from_le_bytes(meta[16..24].try_into().unwrap());
         if hw != 0 {
@@ -168,6 +323,7 @@ impl Stats {
             self.last_hw = Some(hw);
         }
         let present = get32(meta, 24)?;
+        self.context("audio metadata/cadence");
         let nonpcm = get32(meta, 40)?;
         if present & !0xffff != 0 || nonpcm & !present != 0 {
             self.fail("invalid audio masks");
@@ -202,15 +358,29 @@ impl Stats {
             }
         }
 
-        let packet_list = packets(p[2])?;
+        self.checked("audio metadata/cadence");
+        self.context("ANC structure");
+        let check_anc = expect.map_or(true, |config| config.anc);
+        let (packet_list, anc_parse_ok) = match packets(p[2]) {
+            Ok(packets) => (packets, true),
+            Err(error) => {
+                if check_anc {
+                    self.fail_check("ANC structure", error);
+                }
+                (Vec::new(), false)
+            }
+        };
         for p in &packet_list {
             *self
                 .anc
                 .entry(format!("{:02x}/{:02x}", p.did, p.sdid))
                 .or_default() += 1;
-            if p.line == 0 || p.line as u32 > m.total_lines {
+            if check_anc && (p.line == 0 || p.line as u32 > m.total_lines) {
                 self.fail("ANC line outside timing");
             }
+        }
+        if check_anc {
+            self.checked("ANC structure");
         }
         let rows = match m.total_lines {
             625 => 34,
@@ -223,34 +393,49 @@ impl Stats {
         if !p[4].is_empty() {
             self.vbi_frames += 1;
         }
+        self.context("video pattern");
         let mark = if expect.is_some() {
-            Some(marker(p[0], l)?)
+            match marker(p[0], l) {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    self.fail(error);
+                    None
+                }
+            }
         } else {
             None
         };
         if let (Some(c), Some(frame)) = (expect, mark) {
-            check_video(p[0], l, frame, m)?;
-            if self.picture.is_none() {
-                self.picture = Some(crate::sapsan::Picture::new(l.width, l.height, m.num, m.den));
-            }
-            let picture = self.picture.as_mut().unwrap();
-            picture.render(frame);
-            if let Some((x, y, w, h)) = picture.frame_rect() {
-                let expected = picture.image();
-                let step = (l.width as usize / 640).min(l.height as usize / 360).max(1);
-                for yy in (y..y + h).step_by(step) {
-                    for xx in (x..x + w).step_by(step) {
-                        let got = luma(p[0], l, xx as u32, yy as u32)?;
-                        let want = expected[yy * l.width as usize + xx] as u16 * 4;
-                        if got.abs_diff(want) > 16 {
-                            return Err(format!(
+            let picture_result = (|| -> Result<()> {
+                check_video(p[0], l, frame, m)?;
+                if self.picture.is_none() {
+                    self.picture =
+                        Some(crate::sapsan::Picture::new(l.width, l.height, m.num, m.den));
+                }
+                let picture = self.picture.as_mut().unwrap();
+                picture.render(frame);
+                if let Some((x, y, w, h)) = picture.frame_rect() {
+                    let expected = picture.image();
+                    let step = (l.width as usize / 640).min(l.height as usize / 360).max(1);
+                    for yy in (y..y + h).step_by(step) {
+                        for xx in (x..x + w).step_by(step) {
+                            let got = luma(p[0], l, xx as u32, yy as u32)?;
+                            let want = expected[yy * l.width as usize + xx] as u16 * 4;
+                            if got.abs_diff(want) > 16 {
+                                return Err(format!(
                                 "Sapsan frame-counter text mismatch at {xx},{yy} for picture {frame}: {got}, expected {want}"
                             ));
+                            }
                         }
                     }
                 }
-            }
 
+                Ok(())
+            })();
+            match picture_result {
+                Ok(()) => self.checked("video pattern"),
+                Err(error) => self.fail(error),
+            }
             if let Some(last) = self.last_marker {
                 if frame != last.wrapping_add(1) {
                     self.fail(format!("picture marker discontinuity {last}->{frame}"));
@@ -263,6 +448,7 @@ impl Stats {
                     c.flags_at(frame)
                 ));
             }
+            self.checked("HDR/level metadata");
             if present & ((1 << c.channels) - 1) != (1 << c.channels) - 1 {
                 self.fail(format!(
                     "audio present {present:#x}, expected {} channels",
@@ -274,21 +460,37 @@ impl Stats {
                     && get32(p[1], i * 64 + 4).is_ok_and(|v| v >> 16 == 0x4e1f)
             });
             if c.nonpcm && preamble && nonpcm & 3 != 3 {
-                self.fail("SMPTE 337M channels not detected");
+                self.fail_check(
+                    "encoded audio metadata",
+                    "SMPTE 337M channels 1/2 not marked as non-PCM despite a detected preamble",
+                );
             }
-            if c.anc {
+            if c.nonpcm && nonpcm & 3 == 3 {
+                self.checked("encoded audio metadata");
+            }
+            if c.anc && anc_parse_ok {
                 for wanted in fixture_packets(frame, m, c.scte104_fragments) {
-                    if !packet_list.iter().any(|p| {
-                        p.did == wanted.did && p.sdid == wanted.sdid && p.data == wanted.data
-                    }) {
-                        self.fail(format!(
-                            "missing/corrupt ANC {:02x}/{:02x} for picture {frame}",
-                            wanted.did, wanted.sdid
-                        ));
+                    let name = format!("ANC {:02x}/{:02x}", wanted.did, wanted.sdid);
+                    let same_type: Vec<_> = packet_list
+                        .iter()
+                        .filter(|p| p.did == wanted.did && p.sdid == wanted.sdid)
+                        .collect();
+                    if same_type.is_empty() {
+                        self.fail_check(
+                            &name,
+                            format!(
+                                "ANC {:02x}/{:02x}: expected packet absent for picture {frame}",
+                                wanted.did, wanted.sdid
+                            ),
+                        );
+                    } else if !same_type.iter().any(|p| p.data == wanted.data) {
+                        self.fail_check(&name, format!("ANC {:02x}/{:02x}: packet present but payload does not match picture {frame}", wanted.did, wanted.sdid));
                     }
+                    self.checked(&format!("ANC {:02x}/{:02x}", wanted.did, wanted.sdid));
                 }
             }
             if c.vbi && rows != 0 {
+                self.context("SD VBI");
                 if m.total_lines == 625 {
                     if let Err(e) = crate::teletext::check_vbi(p[4], m.total_lines, frame) {
                         self.fail(e);
@@ -304,9 +506,11 @@ impl Stats {
                         }
                     }
                 }
+                self.checked("SD VBI");
             }
         }
         let words = p[1];
+        self.context("PCM payload");
         let mut active = 0;
         for ch in 0..16 {
             for sample in 0..declared {
@@ -349,6 +553,7 @@ impl Stats {
                     }
                 }
                 if let Some(phase) = self.encoded_phase {
+                    self.context("encoded audio");
                     let mut bad = 0;
                     for i in 0..declared {
                         for ch in 0..2 {
@@ -362,6 +567,7 @@ impl Stats {
                         self.fail(format!("{bad} SMPTE 337M transport payload mismatches"));
                     }
                     self.encoded_phase = Some((phase + declared as u64) % period);
+                    self.checked("encoded audio");
                 }
             }
             let begin = if c.nonpcm { 2 } else { 0 };
@@ -385,14 +591,36 @@ impl Stats {
                 self.observed_audio = true;
             }
             if let Some(phase) = self.phase {
+                self.context("PCM payload");
                 let mut bad = 0;
-                for i in 0..declared {
-                    for ch in begin..c.channels as usize {
-                        let a = get32(words, (i * 16 + ch) * 4)? as i32 >> 8;
-                        if a.abs_diff(tone(phase + i as u64, ch)) > 8192 {
-                            bad += 1;
+                for ch in begin..c.channels as usize {
+                    let name = format!("PCM channel {}", ch + 1);
+                    let mut channel_bad = 0;
+                    for i in 0..declared {
+                        let got = get32(words, (i * 16 + ch) * 4)? as i32 >> 8;
+                        if got.abs_diff(tone(phase + i as u64, ch)) > 8192 {
+                            channel_bad += 1;
                         }
                     }
+                    if present & (1 << ch) == 0 {
+                        self.fail_check(
+                            &name,
+                            format!("PCM channel {}: absent from audio-present mask", ch + 1),
+                        );
+                    }
+                    if declared == 0 {
+                        self.fail_check(
+                            &name,
+                            format!("PCM channel {}: no audio samples received", ch + 1),
+                        );
+                    } else {
+                        self.channel_observations[ch] += 1;
+                        self.checked(&name);
+                        if channel_bad != 0 {
+                            self.fail_check(&name, format!("PCM channel {}: {channel_bad}/{declared} tone samples mismatch or lose continuity", ch + 1));
+                        }
+                    }
+                    bad += channel_bad;
                 }
                 if bad != 0 {
                     let mut message = format!("{bad} PCM tone/continuity mismatches");
@@ -410,6 +638,9 @@ impl Stats {
                     self.fail(message);
                 }
                 self.phase = Some((phase + declared as u64) % 192);
+                if c.channels as usize > begin {
+                    self.checked("PCM payload");
+                }
             }
             if declared == 0 {
                 self.fail("no audio samples");
@@ -437,6 +668,15 @@ impl Stats {
                     ));
                 }
             }
+            let begin = if c.nonpcm { 2 } else { 0 };
+            for channel in begin..c.channels as usize {
+                if self.channel_observations[channel] == 0 {
+                    self.skip_check(
+                        &format!("PCM channel {}", channel + 1),
+                        "No valid samples checked; inspect audio cadence/ABI errors",
+                    );
+                }
+            }
             if self.audio_samples == 0 {
                 self.fail("no audio received");
             }
@@ -444,11 +684,32 @@ impl Stats {
                 self.fail("no valid SMPTE 337M preamble received");
             }
             if c.nonpcm && self.nonpcm & 3 != 3 {
-                self.fail("no SMPTE 337M channel mask received");
+                self.fail_check(
+                    "encoded audio metadata",
+                    "No non-PCM channel mask for SDI slots 1/2 received",
+                );
             }
             if c.anc && self.anc.is_empty() {
                 self.fail("no ANC received");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+    #[test]
+    fn independent_checks_keep_failures_after_the_global_error_list_is_full() {
+        let mut stats = Stats::default();
+        stats.checked("PCM payload");
+        for frame in 0..30 {
+            stats.fail(format!("missing/corrupt ANC 60/60 for picture {frame}"));
+        }
+        stats.fail("HDR/level flags mismatch");
+        assert_eq!(stats.errors.len(), 20);
+        assert_eq!(stats.checks["ANC 60/60"].failures, 30);
+        assert_eq!(stats.checks["HDR/level metadata"].failures, 1);
+        assert_eq!(stats.checks["PCM payload"].failures, 0);
     }
 }

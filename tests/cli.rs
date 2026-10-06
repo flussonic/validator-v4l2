@@ -32,7 +32,15 @@ fn inventory_and_quick_skip_single_plane_device_caps() {
 #[test]
 fn coordination_flags_are_accepted_by_the_real_binary() {
     let out = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"))
-        .args(["help", "--wire-plan", "--exhaustive", "--stop-on-stdin"])
+        .args([
+            "help",
+            "--wire-plan",
+            "--exhaustive",
+            "--stop-on-stdin",
+            "--nodes",
+            "/dev/video0,/dev/video4",
+            "--cross-board",
+        ])
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -95,7 +103,7 @@ fn software_run_saves_jsonl_and_offline_html() {
         .unwrap()
         .contains("\"status\":\"PASS\""));
     let page = std::fs::read_to_string(&html).unwrap();
-    assert!(page.contains("SDI validator report"));
+    assert!(page.contains("V4L2 validation report"));
     assert!(page.contains("crc_errors"));
     assert!(!page.contains("{{LOG}}"));
     assert!(!page.contains("{{SCRIPT}}"));

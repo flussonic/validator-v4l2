@@ -8,7 +8,7 @@ use crate::{
     Options, Result, Task,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -30,6 +30,7 @@ pub fn topology() -> Result<V> {
                 ("card", string(crate::text(&info.card))),
                 ("bus", string(crate::text(&info.bus))),
                 ("sdi", V::Bool(sdi)),
+                ("asi", V::Bool(info.asi())),
                 ("output", V::Bool(info.output != 0)),
                 (
                     "modes",
@@ -61,8 +62,125 @@ pub fn topology() -> Result<V> {
     }
     Ok(json::object(&[
         ("host_id", string(host_id())),
+        (
+            "dma_heap_system",
+            V::Bool(std::path::Path::new("/dev/dma_heap/system").exists()),
+        ),
         ("devices", V::Array(devices)),
     ]))
+}
+
+thread_local! {
+    static CAPABILITIES: std::cell::RefCell<BTreeMap<String, V>> = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+pub(crate) fn pair_unavailable(o: &Options, case: &crate::Case) -> Result<Option<String>> {
+    // SSH workers retain their direct validation path; HTTP/local coordinators
+    // know advertised capabilities and can mark unsupported scenarios SKIP.
+    if o.values.contains_key("--tx-host") || o.values.contains_key("--rx-host") {
+        return Ok(None);
+    }
+    let (tx, rx) = crate::pair(o)?;
+    if case.config.flags & 1 != 0
+        && !(case.mode.contains("1080p50")
+            || case.mode.contains("1080p59.94")
+            || case.mode.contains("1080p60"))
+    {
+        return Ok(Some(format!(
+            "3G Level B is not applicable to timing {}; requires 1080p50/59.94/60",
+            case.mode
+        )));
+    }
+    for (key, path, output) in [("--tx-url", tx, true), ("--rx-url", rx, false)] {
+        let url = o.get(key, "local");
+        let value = CAPABILITIES.with(|cache| -> Result<V> {
+            if let Some(value) = cache.borrow().get(url) {
+                return Ok(value.clone());
+            }
+            let value = if url == "local" {
+                topology()?
+            } else {
+                let response = endpoint(url, o)?.request("GET", "/v1/topology", V::Null)?;
+                let response = agent::Output::from_value(&response)?;
+                if !response.success {
+                    return Err("Cannot obtain device capabilities".into());
+                }
+                json::parse(&String::from_utf8(response.stdout).map_err(|e| e.to_string())?)?
+            };
+            cache.borrow_mut().insert(url.into(), value.clone());
+            Ok(value)
+        })?;
+        if case.memory == "dmabuf"
+            && value.get("dma_heap_system").and_then(V::boolean).ok() == Some(false)
+        {
+            return Ok(Some(format!("{url}: DMABUF scenario unavailable; /dev/dma_heap/system is absent. No stream started.")));
+        }
+        let Some(device) = value
+            .get("devices")?
+            .array()?
+            .iter()
+            .find(|d| d.get("device").and_then(V::string).ok() == Some(path))
+        else {
+            continue;
+        };
+        if device.get("error").is_ok() {
+            continue;
+        }
+        if device.get("output")?.boolean()? != output {
+            return Ok(Some(format!(
+                "{url} {path}: requested {} direction is not advertised",
+                if output { "OUT" } else { "IN" }
+            )));
+        }
+        if case.mode == "ASI" {
+            if !device.get("asi").and_then(V::boolean).unwrap_or(false) {
+                return Ok(Some(format!(
+                    "{url} {path}: ASI transport is not advertised"
+                )));
+            }
+        } else {
+            let supported = device
+                .get("modes")?
+                .array()?
+                .iter()
+                .any(|m| m.string().is_ok_and(|m| mode_matches(m, &case.mode)));
+            if !supported {
+                return Ok(Some(format!(
+                    "{url} {path}: timing {} is not advertised",
+                    case.mode
+                )));
+            }
+            if !device
+                .get("formats")?
+                .array()?
+                .iter()
+                .any(|f| f.string().ok() == Some(case.format.as_str()))
+            {
+                return Ok(Some(format!(
+                    "{url} {path}: format {} is not advertised",
+                    case.format
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+fn mode_matches(actual: &str, requested: &str) -> bool {
+    fn normalize(mode: &str) -> String {
+        if let Some((integer, fraction)) = mode.split_once('.') {
+            let fraction = fraction.trim_end_matches('0');
+            if fraction.is_empty() {
+                integer.into()
+            } else {
+                format!("{integer}.{fraction}")
+            }
+        } else {
+            mode.into()
+        }
+    }
+    normalize(actual) == normalize(requested)
+        || actual
+            .rsplit_once('x')
+            .is_some_and(|(_, short)| normalize(short) == normalize(requested))
 }
 
 fn host_id() -> String {
@@ -81,6 +199,8 @@ struct Node {
     output: bool,
     modes: BTreeSet<String>,
     formats: BTreeSet<String>,
+    board: String,
+    asi: bool,
 }
 impl Node {
     fn label(&self) -> String {
@@ -90,7 +210,10 @@ impl Node {
 fn parse_nodes(value: &V, url: Option<String>) -> Result<Vec<Node>> {
     let mut nodes = vec![];
     for entry in value.get("devices")?.array()? {
-        if entry.get("error").is_ok() || !entry.get("sdi")?.boolean()? {
+        if entry.get("error").is_ok()
+            || (!entry.get("sdi")?.boolean()?
+                && !entry.get("asi").and_then(V::boolean).unwrap_or(false))
+        {
             continue;
         }
         let strings = |key| -> Result<BTreeSet<String>> {
@@ -108,16 +231,65 @@ fn parse_nodes(value: &V, url: Option<String>) -> Result<Vec<Node>> {
         {
             return Err("invalid topology device path".into());
         }
+        let asi = entry.get("asi").and_then(V::boolean).unwrap_or(false);
         nodes.push(Node {
+            asi,
+            board: format!(
+                "{}|{}|{}",
+                value.get("host_id")?.string()?,
+                entry.get("bus")?.string()?,
+                entry.get("driver")?.string()?
+            ),
             url: url.clone(),
             path: path.into(),
             output: entry.get("output")?.boolean()?,
-            modes: strings("modes")?,
-            formats: strings("formats")?,
+            modes: if asi {
+                ["ASI".into()].into()
+            } else {
+                strings("modes")?
+            },
+            formats: if asi {
+                ["MPEG".into()].into()
+            } else {
+                strings("formats")?
+            },
         });
     }
     Ok(nodes)
 }
+fn missing_roles(nodes: &[Node]) -> Vec<(&Node, &'static str)> {
+    let mut boards: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
+    for node in nodes {
+        if !node.board.contains("||") {
+            boards.entry(&node.board).or_default().push(node);
+        }
+    }
+    let mut missing = vec![];
+    for ports in boards.values() {
+        for (asi, output, role) in [
+            (false, false, "SDI input"),
+            (false, true, "SDI output"),
+            (true, false, "ASI input"),
+            (true, true, "ASI output"),
+        ] {
+            if !ports
+                .iter()
+                .any(|node| node.asi == asi && node.output == output)
+            {
+                missing.push((ports[0], role));
+            }
+        }
+    }
+    missing
+}
+fn report_missing_roles(o: &Options, nodes: &[Node]) -> Result<()> {
+    for (node, role) in missing_roles(nodes) {
+        emit(o.report(), "SKIP", &format!("{} capability {role}", node.label()),
+            &format!("{role} is not advertised by any inventoried port of this physical board; the scenario is unavailable, not a validation failure"), None)?;
+    }
+    Ok(())
+}
+
 fn endpoint(url: &str, o: &Options) -> Result<agent::Endpoint> {
     agent::Endpoint::new(
         url,
@@ -152,6 +324,12 @@ fn routing_options(o: &Options, tx: &Node, rx: &Node) -> Options {
     routed
 }
 fn probe_case(tx: &Node, rx: &Node) -> Option<(String, String)> {
+    if tx.asi != rx.asi {
+        return None;
+    }
+    if tx.asi {
+        return Some(("ASI".into(), "MPEG".into()));
+    }
     let mode = tx
         .modes
         .intersection(&rx.modes)
@@ -211,7 +389,7 @@ fn test_connection(o: &Options, tx: &Node, rx: &Node, id: u32) -> Result<bool> {
         return Ok(false);
     };
     let routed = routing_options(o, tx, rx);
-    let common = vec![
+    let mut common = vec![
         "--mode".into(),
         mode,
         "--format".into(),
@@ -221,6 +399,9 @@ fn test_connection(o: &Options, tx: &Node, rx: &Node, id: u32) -> Result<bool> {
         "--no-anc".into(),
         "--no-vbi".into(),
     ];
+    if tx.asi {
+        common = vec!["--asi".into(), "--probe-id".into(), id.to_string()];
+    }
     // Reopen the transmitter for each candidate: half-duplex inputs can alter its port.
     let mut ta = vec![
         "transmit".into(),
@@ -282,7 +463,7 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
         let mut inventory = o.clone();
         inventory
             .switches
-            .retain(|s| s != "--inventory-only" && s != "--discover-only");
+            .retain(|s| s != "--inventory-only" && s != "--discover-only" && s != "--all-routes");
         inventory.values.remove("--peer-agent");
         return crate::quick(&inventory);
     }
@@ -312,6 +493,7 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
         let mut inventory = o.clone();
         inventory.values.insert("--agent-url".into(), url);
         ok &= crate::inventory(&inventory)?;
+        report_missing_roles(o, &nodes)?;
         all.extend(nodes);
     }
     if cfg!(target_os = "linux")
@@ -323,14 +505,29 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
             local.values.remove(key);
         }
         ok &= crate::inventory(&local)?;
-        all.extend(parse_nodes(&topology()?, None)?);
+        let nodes = parse_nodes(&topology()?, None)?;
+        report_missing_roles(o, &nodes)?;
+        all.extend(nodes);
+    }
+    if o.has("--asi") {
+        all.retain(|node| node.asi);
+    }
+    if let Some(paths) = o.values.get("--nodes") {
+        let paths: BTreeSet<_> = paths.split(',').collect();
+        if paths
+            .iter()
+            .any(|path| !all.iter().any(|node| node.path == *path))
+        {
+            return Err("--nodes contains an unavailable device node".into());
+        }
+        all.retain(|node| paths.contains(node.path.as_str()));
     }
     if all.is_empty() {
         emit(
             o.report(),
             "SKIP",
             "automatic connection discovery",
-            "No usable five-plane V4L2 devices were found",
+            "No usable V4L2 devices were found for the selected SDI/ASI transport",
             None,
         )?;
     }
@@ -346,6 +543,9 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
     let mut index = 0u32;
     for tx in outputs {
         for rx in &inputs {
+            if o.has("--cross-board") && tx.board == rx.board {
+                continue;
+            }
             if crate::stop_requested() {
                 return Err("connection discovery interrupted".into());
             }
@@ -424,9 +624,36 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
     if o.has("--discover-only") {
         return Ok(ok);
     }
+    let mut representatives: Vec<(&Node, &Node)> = vec![];
     for (tx, rx) in connections {
+        if let Some((base_tx, base_rx)) = representatives
+            .iter()
+            .find(|(a, b)| equivalent(tx, rx, a, b))
+        {
+            emit(o.report(), "INFO", &format!("equivalent route {} -> {}", tx.label(), rx.label()),
+                &json::object(&[
+                    ("representative", string(format!("{} -> {}", base_tx.label(), base_rx.label()))),
+                    ("tested", V::Bool(o.has("--all-routes"))),
+                    ("reason", string("Same physical boards, direction and advertised capabilities; discovery proves connectivity, not identical validation results")),
+                ]).encode(), None)?;
+            if !o.has("--all-routes") {
+                continue;
+            }
+        } else {
+            representatives.push((tx, rx));
+        }
         let routed = routing_options(o, tx, rx);
-        let cases = match crate::planned_cases(&routed, &tx.path) {
+        let plan = if tx.asi {
+            Ok(vec![crate::Case {
+                mode: "ASI".into(),
+                format: "MPEG".into(),
+                config: o.config()?,
+                memory: o.get("--memory", "mmap").into(),
+            }])
+        } else {
+            crate::planned_cases(&routed, &tx.path)
+        };
+        let cases = match plan {
             Ok(cases) => cases,
             Err(error) => {
                 emit(
@@ -479,6 +706,22 @@ pub fn quickcheck(o: &Options) -> Result<bool> {
     Ok(ok)
 }
 
+fn equivalent(tx: &Node, rx: &Node, a: &Node, b: &Node) -> bool {
+    // Missing PCI identity must never collapse independent devices.
+    !tx.board.contains("||")
+        && !rx.board.contains("||")
+        && tx.board == a.board
+        && rx.board == b.board
+        && tx.asi == a.asi
+        && rx.asi == b.asi
+        && tx.output == a.output
+        && rx.output == b.output
+        && tx.modes == a.modes
+        && rx.modes == b.modes
+        && tx.formats == a.formats
+        && rx.formats == b.formats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +736,8 @@ mod tests {
     #[test]
     fn automatic_routes_keep_server_identity_and_use_common_capabilities() {
         let make = |url: &str, output| Node {
+            asi: false,
+            board: format!("{url}|PCI:1|driver"),
             url: Some(url.into()),
             path: "/dev/video0".into(),
             output,
@@ -512,5 +757,50 @@ mod tests {
         assert_eq!(routed.get("--tx-url", ""), "http://sender:5040");
         assert_eq!(routed.get("--rx-url", ""), "http://receiver:5040");
         assert!(!routed.values.contains_key("--agent-url"));
+    }
+}
+
+#[cfg(test)]
+mod equivalence_tests {
+    use super::*;
+    fn node(board: &str, path: &str, output: bool) -> Node {
+        Node {
+            url: Some("http://agent:1".into()),
+            path: path.into(),
+            board: board.into(),
+            output,
+            asi: false,
+            modes: ["1080p25".into()].into(),
+            formats: ["SDUY".into()].into(),
+        }
+    }
+    #[test]
+    fn capture_only_board_has_explicit_output_and_asi_skips() {
+        let port = node("host|PCI:1|x", "/dev/video0", false);
+        let nodes = vec![port];
+        let roles: Vec<_> = missing_roles(&nodes)
+            .into_iter()
+            .map(|(_, role)| role)
+            .collect();
+        assert_eq!(roles, ["SDI output", "ASI input", "ASI output"]);
+    }
+    #[test]
+    fn cables_share_matrix_only_for_same_physical_boards_direction_and_capabilities() {
+        let a = node("host|PCI:1|x", "/dev/video0", true);
+        let b = node("host|PCI:2|y", "/dev/video2", false);
+        let mut c = node("host|PCI:1|x", "/dev/video4", true);
+        let d = node("host|PCI:2|y", "/dev/video6", false);
+        assert!(equivalent(&a, &b, &c, &d));
+        c.board = "host|PCI:3|x".into();
+        assert!(!equivalent(&a, &b, &c, &d));
+        c.board = a.board.clone();
+        c.asi = true;
+        assert!(!equivalent(&a, &b, &c, &d));
+        c.asi = false;
+        c.formats.insert("SD10".into());
+        assert!(!equivalent(&a, &b, &c, &d));
+        c.formats = a.formats.clone();
+        c.output = false;
+        assert!(!equivalent(&a, &b, &c, &d));
     }
 }

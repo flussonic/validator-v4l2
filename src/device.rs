@@ -11,6 +11,12 @@ pub struct Info {
     pub output: u32,
 }
 impl Info {
+    pub fn asi(&self) -> bool {
+        self.caps & (1 | 2) != 0
+            && text(&self.card)
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word.eq_ignore_ascii_case("ASI"))
+    }
     pub fn multiplanar(&self) -> bool {
         // V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_VIDEO_OUTPUT_MPLANE.
         self.caps & (0x0000_1000 | 0x0000_2000) != 0
@@ -113,6 +119,7 @@ extern "C" {
         l: *mut Layout,
         m: *mut Mode,
     ) -> i32;
+    fn vv_asi_open(path: *const c_char, output: u32, d: *mut *mut c_void, l: *mut Layout) -> i32;
     fn vv_close(d: *mut c_void);
     fn vv_buffer(d: *mut c_void, index: u32, f: *mut Frame) -> i32;
     fn vv_queue(d: *mut c_void, f: *const Frame) -> i32;
@@ -150,6 +157,14 @@ mod stub {
         _: *mut *mut c_void,
         _: *mut Layout,
         _: *mut Mode,
+    ) -> i32 {
+        -38
+    }
+    pub unsafe fn vv_asi_open(
+        _: *const c_char,
+        _: u32,
+        _: *mut *mut c_void,
+        _: *mut Layout,
     ) -> i32 {
         -38
     }
@@ -235,6 +250,20 @@ pub struct Device {
     pub count: u32,
 }
 impl Device {
+    pub fn open_asi(p: &str, output: bool) -> Result<Self> {
+        let mut d = Self {
+            raw: std::ptr::null_mut(),
+            layout: Layout::default(),
+            mode: Mode::default(),
+            count: 0,
+        };
+        d.count = check(
+            unsafe { vv_asi_open(path(p)?.as_ptr(), output as u32, &mut d.raw, &mut d.layout) },
+            "ASI configure/allocate",
+        )? as u32;
+        Ok(d)
+    }
+
     pub fn open(
         p: &str,
         output: bool,

@@ -31,11 +31,28 @@ pub fn emit_with_boards(
         quote(detail)
     );
     if let Some(v) = stats {
+        let checks = v.checks.iter().map(|(name, result)| {
+            let status = if result.failures != 0 { "FAIL" } else if result.observations != 0 { "PASS" } else { "SKIP" };
+            format!("{{\"name\":{},\"status\":{},\"observations\":{},\"failure_count\":{},\"errors\":[{}],\"reason\":{}}}",
+                quote(name), quote(status), result.observations, result.failures,
+                result.errors.iter().map(|e| quote(e)).collect::<Vec<_>>().join(","),
+                quote(if status == "SKIP" { &result.reason } else { "" }))
+        }).collect::<Vec<_>>().join(",");
+        s.push_str(&format!(",\"checks\":[{checks}]"));
         s.push_str(&format!(
             ",\"crc_errors\":{},\"probe_frames\":{}",
             v.crc_errors, v.probe_frames
         ));
         s.push_str(&format!(",\"frames\":{},\"gaps\":{},\"failure_count\":{},\"audio_samples\":{},\"audio_present_mask\":{},\"audio_present_channels\":{},\"audio_nonzero_channels\":{},\"audio_nonpcm_mask\":{},\"flags\":{},\"vbi_frames\":{},\"hw_timestamp_frames\":{},\"source_events\":{},\"anc\":{{{}}},\"errors\":[{}]",v.frames,v.gaps,v.failure_count,v.audio_samples,v.present,v.present.count_ones(),v.measured.count_ones(),v.nonpcm,v.flags,v.vbi_frames,v.hw_frames,v.source_events,v.anc.iter().map(|(k,v)|format!("{}:{v}",quote(k))).collect::<Vec<_>>().join(","),v.errors.iter().map(|s|quote(s)).collect::<Vec<_>>().join(",")));
+    }
+    if stats.is_none() && status != "INFO" && detail.starts_with("tx: ") {
+        let checks = pair_checks(detail);
+        if !checks.is_empty() {
+            s.push_str(&format!(
+                ",\"checks\":{}",
+                crate::json::Value::Array(checks).encode()
+            ));
+        }
     }
     if !boards.is_empty() {
         s.push_str(&format!(
@@ -56,6 +73,37 @@ pub fn emit_with_boards(
     Ok(())
 }
 
+fn pair_checks(detail: &str) -> Vec<crate::json::Value> {
+    use crate::json::{self, Value as V};
+    let mut checks = vec![];
+    let mut side = "TX";
+    for line in detail.lines() {
+        let line = line.trim();
+        let content = if let Some(rest) = line.strip_prefix("tx: ") {
+            side = "TX";
+            rest
+        } else if let Some(rest) = line.strip_prefix("rx: ") {
+            side = "RX";
+            rest
+        } else {
+            line
+        };
+        let Ok(record) = json::parse(content) else {
+            continue;
+        };
+        if let Ok(items) = record.get("checks").and_then(V::array) {
+            for item in items {
+                let mut item = item.clone();
+                if let V::Object(fields) = &mut item {
+                    fields.insert("side".into(), V::Str(side.into()));
+                }
+                checks.push(item);
+            }
+        }
+    }
+    checks
+}
+
 pub fn device_board(info: &crate::device::Info, device: &str) -> crate::json::Value {
     use crate::json::{object, Value as V};
     object(&[
@@ -65,6 +113,20 @@ pub fn device_board(info: &crate::device::Info, device: &str) -> crate::json::Va
         ("device", V::Str(device.into())),
         ("agent", V::Null),
     ])
+}
+pub fn worker_skipped(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output).lines().any(|line| {
+        crate::json::parse(line)
+            .ok()
+            .and_then(|record| {
+                record
+                    .get("status")
+                    .and_then(crate::json::Value::string)
+                    .ok()
+                    .map(|s| s == "SKIP")
+            })
+            .unwrap_or(false)
+    })
 }
 pub fn worker_boards(output: &[u8], agent: &str) -> Vec<crate::json::Value> {
     use crate::json::{self, Value as V};

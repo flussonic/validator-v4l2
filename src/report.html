@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: MIT -->
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SDI validator report</title><style>
+<title>V4L2 validation report — SDI / ASI</title><style>
 *{box-sizing:border-box}
 body{font:15px/1.5 system-ui,-apple-system,sans-serif;margin:0;padding:36px;color:#24324a;background:linear-gradient(155deg,#e9efff 0,#f5f7fb 35%,#edf5f3 100%);min-height:100vh}
 body>header,body>main,body>footer{max-width:1600px;margin:auto}
@@ -14,19 +14,23 @@ h1{font-size:30px;letter-spacing:-.7px;margin:6px 0}header p{margin:0;color:#c7d
 #coverage{color:#5f6d82;margin-bottom:24px}
 .toolbar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;background:#fff;border:1px solid #dce3ec;border-radius:12px;padding:16px 20px}
 label{font-size:13px;font-weight:600;color:#52627a}input,select{font:inherit;padding:9px 12px;border:1px solid #d2dae7;border-radius:7px;margin-left:8px;background:#f9fbfd;color:#24324a}input{min-width:260px}input:focus,select:focus{outline:2px solid #98bcde;outline-offset:2px}
-#connections{margin:24px 0}#connections h2{font-size:18px}#connection-list{display:flex;gap:12px;flex-wrap:wrap}.connection{background:#fff;border:1px solid #dce3ec;border-left:4px solid #327aab;border-radius:10px;padding:16px 20px;min-width:260px;flex:1}.connection strong{display:block;font-size:13px;overflow-wrap:anywhere}.connection p{margin:6px 0 0;color:#68788d;font-size:12px}
+
 .table-wrap{overflow:auto;margin-top:20px;border:1px solid #dce3ec;border-radius:12px;background:#fff;box-shadow:0 5px 18px #22334a08}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:14px 16px;border-bottom:1px solid #e7ecf2;vertical-align:top}th{background:#edf2f8;color:#52627a;font-size:11px;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}td:first-child{max-width:520px;overflow-wrap:anywhere}tr:last-child td{border-bottom:0}tbody tr:hover{background:#f7faff}td:nth-child(3){font-weight:700}td:first-child{min-width:180px;font-weight:600;white-space:pre-line}td:nth-child(2){max-width:520px;overflow-wrap:anywhere}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;background:#f1f4f9;border-radius:8px;color:#394a60}details{margin-top:8px}summary{cursor:pointer;color:#336eab}footer{font-size:12px;color:#68788d;padding-top:22px}#log{display:none}
 @media(max-width:700px){body{padding:16px}header{padding:22px}h1{font-size:25px}.count{min-width:120px;flex:1;padding:14px 18px}.toolbar{gap:12px}input{min-width:0;width:200px}}
+.route-group{background:#fff;border:1px solid #dce3ec;border-radius:12px;margin:16px 0;padding:18px}.route-group>summary{font-size:17px;font-weight:650}.route-group>p{color:#68788d;font-size:13px}.route-group .table-wrap{margin-top:12px}
 </style></head><body>
-<header><small>FLUSSONIC · HARDWARE VALIDATION</small><h1>SDI validator report</h1><p>Video, audio, ANC, HDR and driver stability</p></header>
+<header><small>FLUSSONIC · HARDWARE VALIDATION</small><h1>V4L2 validation report — SDI / ASI</h1><p>Independent video, audio, ANC, metadata, ASI and driver checks</p></header>
 <main>
 <div id="summary"></div><p id="coverage"></p>
-<section id="connections" hidden><h2>Discovered connections</h2><div id="connection-list"></div></section>
+
 <div class="toolbar"><label>Result <select id="status"><option value="">All</option><option>INFO</option><option>FAIL</option><option>PASS</option><option>SKIP</option><option>OBSERVED</option><option>INVALID</option></select></label>
 <label>Find <input id="search" type="search" placeholder="Device, mode, format or error"></label></div>
-<div class="table-wrap"><table><thead><tr><th>Board / route</th><th>Case</th><th>Result</th><th>Frames / gaps</th><th>CRC</th><th>Audio (present / measured)</th><th>ANC / errors</th></tr></thead><tbody id="cases"></tbody></table></div></main>
-<footer>PASS applies to the configured checks in that case; disabled checks do not have coverage. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
+<section><h2>Representative routes</h2><div id="route-groups"></div></section>
+<section><h2>Additional cables / equivalent routes</h2><p>Discovery proves a connection. Untested routes have no feature results.</p><div id="cable-groups"></div></section>
+<section><h2>Unavailable ports / capabilities</h2><div id="unavailable-groups"></div></section>
+<details><summary>Inventory and operational details</summary><div id="diagnostics"></div></details></main>
+<footer>Each check has its own result; routes have counts, not a combined verdict. PASS applies to the configured checks in that case; disabled checks do not have coverage. OBSERVED reports activity without end-to-end validation; SKIP is not PASS. CRC values are counts reported by the driver; zero does not establish CRC support. Review the recorded frame counts and elapsed times against your test plan.</footer>
 <textarea id="log" aria-hidden="true">{{LOG}}</textarea>
 <script>{{SCRIPT}}</script></body></html>
