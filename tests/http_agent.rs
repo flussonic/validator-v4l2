@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::{
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     net::{TcpListener, TcpStream},
     process::{Child, Command, Stdio},
     thread,
@@ -15,24 +15,35 @@ struct Agent {
 }
 impl Agent {
     fn start(token: Option<&str>) -> Self {
-        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = socket.local_addr().unwrap().to_string();
-        drop(socket);
         let mut command = Command::new(env!("CARGO_BIN_EXE_validator-v4l2"));
         command
-            .args(["serve", "--listen", &address])
+            .args(["serve", "--listen", "127.0.0.1:0"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if let Some(token) = token {
             command.args(["--token", token]);
         }
         let child = command.spawn().unwrap();
-        let agent = Self { child, address };
-        let start = Instant::now();
-        while TcpStream::connect(&agent.address).is_err() {
-            assert!(start.elapsed() < Duration::from_secs(5));
-            thread::sleep(Duration::from_millis(20));
-        }
+        let mut agent = Self {
+            child,
+            address: String::new(),
+        };
+        let stderr = agent.child.stderr.take().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let line = std::io::BufReader::new(stderr).lines().next();
+            let _ = send.send(line);
+        });
+        let line = receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("agent did not report readiness")
+            .expect("agent exited before readiness")
+            .expect("cannot read agent readiness");
+        agent.address = line
+            .strip_prefix("validator HTTP agent listening on ")
+            .expect("unexpected agent startup message")
+            .to_string();
+
         agent
     }
     fn request(
@@ -305,4 +316,26 @@ fn bare_quickcheck_produces_html_and_json_even_when_agent_is_unreachable() {
     );
     assert!(files.iter().any(|p| p.extension().unwrap() == "html"));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parallel_agents_keep_their_own_bound_ports_and_authentication() {
+    let threads: Vec<_> = (0..8)
+        .map(|index| {
+            thread::spawn(move || {
+                let token = format!("parallel-test-token-{index}");
+                let agent = Agent::start(Some(&token));
+                assert_eq!(agent.request("GET", "/v1/health", "", None).0, 401);
+                assert_eq!(agent.request("GET", "/v1/health", "", Some(&token)).0, 200);
+                agent
+            })
+        })
+        .collect();
+    let agents: Vec<_> = threads
+        .into_iter()
+        .map(|task| task.join().unwrap())
+        .collect();
+    let addresses: std::collections::BTreeSet<_> =
+        agents.iter().map(|agent| &agent.address).collect();
+    assert_eq!(addresses.len(), agents.len());
 }
