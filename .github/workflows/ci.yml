@@ -13,6 +13,20 @@ jobs:
           toolchain: '${{ matrix.rust }}'
           components: rustfmt, clippy
       - run: make
-      - run: make test
+      - name: Run make test
+        run: |
+          set +e
+          make test > /tmp/validator-test-output.log 2>&1
+          test_status=$?
+          cat /tmp/validator-test-output.log
+          if [ "$test_status" -ne 0 ]; then
+            python3 - <<'PYCODE'
+          from pathlib import Path
+          tail = "\n".join(Path("/tmp/validator-test-output.log").read_text().splitlines()[-80:])
+          tail = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Validator tests::{tail}")
+          PYCODE
+          fi
+          exit "$test_status"
       - run: make check
       - run: ./validator-v4l2 software --frames 4
